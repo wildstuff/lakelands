@@ -689,6 +689,20 @@ impl LakeStore for ForwardingLake {
         self.local.remove_values_preflight(source, selection).await
     }
 
+    async fn erase_values(
+        &self,
+        selection: &Selection,
+        shredded: bool,
+        id: Option<&str>,
+        preflight: bool,
+    ) -> Result<lakelands_api::write::EraseReport> {
+        if !preflight {
+            return Err(self.read_only());
+        }
+        self.caught_up().await?;
+        self.local.erase_values(selection, shredded, id, true).await
+    }
+
     async fn compact(&self) -> Result<CompactReport> {
         Err(self.read_only())
     }

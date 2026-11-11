@@ -1982,14 +1982,53 @@ interface types {
         values: u64,
     }
 
-    /// Which of a source's values a removal takes back: what it wrote
-    /// before a time of the log's clock, in one delivery or any of a set,
-    /// or of what it says it observed before a time (its `seen-at`).
+    /// Which values an act takes back: of a source, what it wrote before
+    /// a time of the log's clock, in one delivery or any of a set, or of
+    /// what it says it observed before a time (its `seen-at`), which a
+    /// removal takes; or every hand's values of one record, one field of
+    /// it, or one quarantined row, which an erase takes (115).
     variant selection {
         written-before(timestamp),
         delivery(delivery-id),
         seen-before(timestamp),
         deliveries(list<delivery-id>),
+        %record(record-selection),
+        quarantined(quarantine-id),
+    }
+
+    /// One record an erase names by the key the head reads it at, and
+    /// the one field of it, or none for every field.
+    record record-selection {
+        %type: type-name,
+        key: record-key,
+        field: option<field-name>,
+    }
+
+    /// What one erase took, or its preflight says it would: the
+    /// selection, the records and values it takes, the versions it
+    /// selects, the keys it destroys, the records it keeps live with a
+    /// value it never takes, the references, the values it redacts only,
+    /// what is computed again, the constraints left broken, the events its
+    /// restate folds, the position, a preflight's id, the entry it closed
+    /// and the sources whose mirrors stop.
+    record erase-report {
+        selection: selection,
+        types: list<forget-records>,
+        fields: list<removed-field>,
+        versions: u64,
+        keys: list<key-id>,
+        apart: list<key-id>,
+        kept: list<forget-records>,
+        references: list<purge-reference>,
+        unshredded: u64,
+        recomputed: list<record-field>,
+        views: list<type-name>,
+        breaches: list<breach>,
+        log-events: u64,
+        position: position,
+        report-id: string,
+        quarantined: option<quarantine-id>,
+        sources: list<source-id>,
     }
 
     /// The values one field of one type loses to a removal.

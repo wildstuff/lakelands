@@ -23,12 +23,12 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// one the lake was made in. A lake in any other format is refused by name,
 /// with both numbers, and nothing of it is read (`docs/log-format.md` §6,
 /// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-pub const LOG_FORMAT_VERSION: u32 = 23;
+pub const LOG_FORMAT_VERSION: u32 = 24;
 
-/// The oldest log format this release reads: 23, the format this store's
+/// The oldest log format this release reads: 24, the format this store's
 /// promise of reading starts from
 /// (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`).
-pub const OLDEST_LOG_FORMAT: u32 = 23;
+pub const OLDEST_LOG_FORMAT: u32 = 24;
 
 /// A SHA-256 digest, as 64 lower-case hexadecimal digits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -530,6 +530,21 @@ pub enum EventBody {
         /// `source_forgotten` or `source_purged` it began with.
         act: Position,
     },
+    /// A host erased the values of one record, one field of it, or one
+    /// quarantined row: each value of a selected write before this event
+    /// reads as erased, at every position, of every hand
+    /// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+    ValuesErased {
+        /// The selection: a `record` or a `quarantined` one.
+        selection: crate::write::Selection,
+        /// The versions of the owning source's key it destroys, oldest
+        /// first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keys: Vec<crate::id::KeyId>,
+        /// The keys of deliveries sealed apart it destroys, in id order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        apart: Vec<crate::id::KeyId>,
+    },
 }
 
 /// The kinds of one format version: `EventBody::kind` and [`KINDS`] come
@@ -581,6 +596,7 @@ kinds! {
     SourcePurged => "source_purged",
     ActWhole => "act_whole",
     ValuesThinned => "values_thinned",
+    ValuesErased => "values_erased",
 }
 
 /// What kind of change fired a trigger (lakelands#1217): the write at the

@@ -312,6 +312,7 @@ impl Lake {
             heads: tokio::sync::watch::Sender::new(0),
             holds_lease: AtomicBool::new(false),
             regained: AtomicBool::new(false),
+            erased: AtomicBool::new(false),
             held: AtomicUsize::new(0),
             owned: AtomicBool::new(false),
             shapes: Mutex::default(),

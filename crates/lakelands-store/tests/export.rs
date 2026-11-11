@@ -1,5 +1,5 @@
 //! An export read back by a verifier that shares no code with Lakelands:
-//! `docs/log-format/vectors/23/verify.py` in its directory mode, over a lake
+//! `docs/log-format/vectors/24/verify.py` in its directory mode, over a lake
 //! with a checkpoint (two files) and a re-key; and
 //! an export whose feed breaks, which leaves nothing behind.
 //!
@@ -105,7 +105,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
     );
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/23/verify.py");
+        .join("../../docs/log-format/vectors/24/verify.py");
     let run = Command::new("python3").arg(&script).arg(&dir).output();
     let run = match run {
         Ok(run) => run,
@@ -174,7 +174,7 @@ type Damage<'a> = (&'a SegmentFile, &'a dyn Fn(&mut Value), Position);
 #[test]
 fn verify_py_refuses_the_negative_vector_whose_known_at_goes_back() {
     let vectors =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/23");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/24");
     let said = python(
         &vectors.join("verify.py"),
         &vectors.join("negative/known-at-goes-back"),
@@ -337,6 +337,18 @@ impl LakeStore for BreaksMidway {
         self.0
             .inner
             .remove_values_preflight(source, selection)
+            .await
+    }
+    async fn erase_values(
+        &self,
+        selection: &lakelands_api::write::Selection,
+        shredded: bool,
+        id: Option<&str>,
+        preflight: bool,
+    ) -> lakelands_api::Result<lakelands_api::write::EraseReport> {
+        self.0
+            .inner
+            .erase_values(selection, shredded, id, preflight)
             .await
     }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {

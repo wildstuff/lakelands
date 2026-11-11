@@ -24,8 +24,8 @@ use lakelands_api::seam::{
     ZONE_SETTING,
 };
 use lakelands_api::write::{
-    AgeReport, Change, CompactReport, Declaration, ForgetReport, ForgetSetReport, IngestOpts,
-    Migration, MigrationReport, Outcome, Plan, Proposal, ProposalFilter, ProposedWrite,
+    AgeReport, Change, CompactReport, Declaration, EraseReport, ForgetReport, ForgetSetReport,
+    IngestOpts, Migration, MigrationReport, Outcome, Plan, Proposal, ProposalFilter, ProposedWrite,
     PurgeReport, Recompute, RemoveReport, Selection, ValueTypeMigration, ValueTypeReport,
     WriteOpts,
 };
@@ -1577,6 +1577,28 @@ impl LakeStore for Store {
         writes::check_source(source)?;
         let (lake, source, selection) = (self.lake.clone(), source.clone(), selection.clone());
         exec::run(move || crate::remove::preflight(&lake, &source, &selection)).await
+    }
+
+    async fn erase_values(
+        &self,
+        selection: &Selection,
+        require_shredded: bool,
+        report_id: Option<&str>,
+        preflight: bool,
+    ) -> Result<EraseReport> {
+        let (selection, id) = (selection.clone(), report_id.map(str::to_owned));
+        let asked = (require_shredded, id, preflight);
+        // The host's act, under the writer's lock: one append, or none.
+        let (mut report, own) = exec::write(&self.lake, move |t| {
+            let mut w = t.for_write()?;
+            let (shredded, id, preflight) = (asked.0, asked.1.as_deref(), asked.2);
+            crate::erase::erase(t, &mut w, &selection, (shredded, id, preflight))
+        })
+        .await?;
+        if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
+            report.position = report.position.max(last);
+        }
+        Ok(report)
     }
 
     async fn thin_values(

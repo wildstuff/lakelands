@@ -1777,6 +1777,19 @@
    "code": "remove_report_stale"
   },
   {
+   "code": "remove_erases"
+  },
+  {
+   "code": "erase_selection"
+  },
+  {
+   "code": "erase_not_shredded",
+   "count": 1
+  },
+  {
+   "code": "erase_report_stale"
+  },
+  {
    "code": "required",
    "field": "f",
    "type": "t"

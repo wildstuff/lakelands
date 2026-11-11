@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 23.** Reviewed so that a verifier can be written from
+**Format version 24.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). A release reads and writes one
 format version, this one: every event of a lake carries it, from
 position 0, and a lake written in another is refused by name and never
@@ -88,7 +88,7 @@ one JSON object followed by one line feed (`0x0A`). The lines are a
 restored exactly
 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
 
-- **A frame** is a line `{"events": n, "frame": F, "v": 23}`, `n` at
+- **A frame** is a line `{"events": n, "frame": F, "v": 24}`, `n` at
   least 1, followed by the lines of the n events it covers, all in its
   segment. `F` holds members that all n events hold with equal values:
   top-level ones other than `v`, `id`, `hash`, `position`, `prev`,
@@ -369,7 +369,7 @@ store has lost the version it last sealed with: the write is refused the
 same way, so a wrong key store fails at the write, not at a later
 rebuild. A verifier without the
 keys checks every hash and id over the bytes as stored, and the form of
-each sealed member, or of its box. `docs/log-format/vectors/23/` holds
+each sealed member, or of its box. `docs/log-format/vectors/24/` holds
 ingests whose members are sealed in a box (`boxed.json`), a quarantined
 record whose cell is sealed in one, and a sealed output, under a key
 its README names.
@@ -384,7 +384,7 @@ that would pass either, and stores each run as one block. A block is two
 parts, one after the other in its segment:
 
 ```text
-{"block":{"end":E,"events":n,"first":F,"hash":H,"prev":P,"raw":r,"stored":z},"v":23}\n
+{"block":{"end":E,"events":n,"first":F,"hash":H,"prev":P,"raw":r,"stored":z},"v":24}\n
 <z bytes: the zlib stream (RFC 1950) of the block's r bytes of lines>\n
 ```
 
@@ -559,13 +559,14 @@ this object:
 | `record_upserted` | `type`, `key`, `version`, `patch`, `made` | An authored write. Its `patch` may carry a field of `authority: verb` too, written by a verb's call or by an aging rule (lakelands#1130). `patch` is sparse: each member sets a field, `null` clears it, an absent field is unchanged (`docs/decisions/012-writes-touch-only-their-fields.md`). `made` is described below the table. |
 | `record_ingested` | `type`, `key`, `version`, `patch`, `made` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch, and an `authored` field whose `admits` names the event's `source` (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`). `made` as on `record_upserted`. |
 | `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. A verb whose `effect` is `retire` writes it, caused by its `verb_called` and carrying the verb as its `procedure` (lakelands#1148). The same append closes its pending `compute`s (see `write_proposed`). |
-| `values_removed` | `source`, `selection` (`{"written_before": <time>}`, `{"delivery": <id>}`, `{"seen_before": <time>}` or `{"deliveries": [<id>, …]}`, its ids in order, each once), `before` (for a `written_before`, the first position it does not reach), `keys` (the versions of the source's key it destroys, oldest first; absent where none), `apart` (the source's keys of deliveries sealed apart it destroys, in id order; absent where none) | The host took back part of the source (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): each non-null member of the patch of a `record_ingested` of the source before this position that the selection names (below `before`, of that `delivery` or of any of the `deliveries`, or stating a `seen_at` before that time), a key field and a reference field excepted, folds as erased, as at `source_forgotten`. A value sealed under a version `keys` names, or a key `apart` names, which the key store no longer gives, folds as erased, not as a lost key, and an output sealed under one records nothing. The `record_retired` of each record the source made left holding nothing of another hand follows in the same append. |
+| `values_removed` | `source`, `selection` (`{"written_before": <time>}`, `{"delivery": <id>}`, `{"seen_before": <time>}` or `{"deliveries": [<id>, …]}`, its ids in order, each once; these four and no other: a `record` or a `quarantined` selection is refused as damage where it is read, by a reader and by a rebuild alike, and is never folded as selecting nothing), `before` (for a `written_before`, the first position it does not reach), `keys` (the versions of the source's key it destroys, oldest first; absent where none), `apart` (the source's keys of deliveries sealed apart it destroys, in id order; absent where none) | The host took back part of the source (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): each non-null member of the patch of a `record_ingested` of the source before this position that the selection names (below `before`, of that `delivery` or of any of the `deliveries`, or stating a `seen_at` before that time), a key field and a reference field excepted, folds as erased, as at `source_forgotten`. A value sealed under a version `keys` names, or a key `apart` names, which the key store no longer gives, folds as erased, not as a lost key, and an output sealed under one records nothing. The `record_retired` of each record the source made left holding nothing of another hand follows in the same append. |
+| `values_erased` | `selection` (`{"record": {"type": <type>, "key": <key>}}`, with `"field": <field>` beside them for one field of it, or `{"quarantined": <id>}`, and no other), `keys` (the versions of the record's key it destroys, oldest first; absent where none), `apart` (the apart keys it destroys, in id order; absent where none) | The host erased values of one record, one field or one quarantined row (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`). A `record` selection selects every `record_upserted` and `record_ingested` of the record before this position, of every hand, following its key back through every `migrated` that re-keyed it, and ending where another record had taken a key it held. Each non-null member of the patch of every selected write, and every cell of every version of a quarantined id, folds as erased at its own position, `as_of` included; a key field, a reference field and an `initial` excepted. A value sealed under a version `keys` names, or under a key `apart` names, which the key store no longer gives, folds as erased, not as a lost key. A record left holding no value stays live, its provenance kept with `erased: true`. Derived values, sets and triggers over an erased value are recomputed or waited as for `values_removed`. Written by the host through the store facade, or by `system:lakelands` after a `quarantine_closed` in the same append where the lake's `erase_on_close` is set; where the id is open, its `quarantine_closed` with `why: removed` follows it in the same append. |
 | `values_thinned` | `type`, `by`, `before`, `keys` (the records this part takes, in order, each once) | One part of a thinning act (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`): the records of the type whose `by` field, of instants or of dates, is certainly before `before`, and whose key the act had not already taken, are taken. The first part begins the act and carries the horizon; a later part carries the same horizon and the keys it takes. The log keeps every event, and a rebuild folds the parts again. The kind landed at S1 of 102 and the engines' two stored tables at S2: `thinned_types (ty, by, before, at, through, gone)`, one row for each act on a type, and `thinned (ty, key, before, at)`, one row for each record an act took, both read at the head in every read. The act's fold, which deletes the records' states and marks their groups stranded, lands at S3 and S5, so a fold of this version records the part and changes nothing else. |
 | `source_forgotten` | `source`, `keys` (the versions of its key, a list), `act` (the position of the act's first event) | The host forgot the source (`docs/decisions/058-a-source-may-be-forgotten.md`): its keys are destroyed, and every value it sealed, before this position and after, folds as erased: the field holds no value, and its provenance is kept with `erased: true`; an `output_recorded` it sealed records nothing, and one that names it by `output_at` fills nothing. Every `source_forgotten` names its act by its first position, and the act's `act_whole` names the same, so an act a crash left between its turns reads as itself even when another act begins and ends before it is taken up again. A sealed value whose key the key store does not give, where no `source_forgotten` of its source is in the log, is not erased: the fold fails closed. The `record_retired` of each record the source made and alone brought follows in the same append. |
 | `record_restricted` | `type`, `key`, `version`, `reason` | The record is withheld from principals without the `restricted` grant (a retention hold); `reason` is the host's. Written by the host through the store facade, never by a caller's door. |
 | `record_unrestricted` | `type`, `key`, `version` | The hold is lifted. |
 | `record_quarantined` | `type`, `key` (as sent), `id` (`{ "source", "delivery", "index" }`), `version` (from 1), `cells`, `sealed`, `seen_at`, `upstream`, `refusal` | A record of an ingest that asked `quarantine_refused` was refused by a rule of the record and kept, and the stream went on (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`). The envelope names the `source` and its record's `delivery` in that call, which is the id's only for its first version, and the caller as `writer`; `cells` are the members as sent, each in its canonical form and never coerced to its field, those `sealed` names left out (§1.4); `refusal` is the error its writer would have been answered, in its wire form. Each is one version of its id, which opens again where it was closed. No record is written: no read, set or trigger sees it. It may be a record the host refused before any ingest, kept through its own door: its `refusal` is then a `declined` of case `refused_by_host`, naming the host's cause and sentence, and its `id` may name the host's run in place of the delivery and the record's line in place of its place (lakelands#1596). Neither changes the event's form, so a reader reads it as any other. The fold keeps the last version of each id; `source_forgotten` erases every sealed cell, and a `values_removed` erases those of the versions it selects as it selects a `record_ingested`. |
-| `quarantine_closed` | `id`, `type`, `key`, `why` (`resubmitted`, `landed`, `dismissed`, `forgotten`, `removed` or `purged`) | A quarantined record closed, in the same append as what closed it (085): its resubmission written or a duplicate, under the resubmission's envelope; a `record_upserted` or `record_ingested` of a caller's write door at its type and key, `system:lakelands`'s; a dismiss, under the dismisser as `writer`, origin `authored`, its `source` set; a `source_forgotten`, a `values_removed` that selects its last version, or a purge of its source or of its type of that source, `system:lakelands`'s. The fold keeps its id, last version, close and why, and drops its cells. |
+| `quarantine_closed` | `id`, `type`, `key`, `why` (`resubmitted`, `landed`, `dismissed`, `forgotten`, `removed` or `purged`) | A quarantined record closed, in the same append as what closed it (085): its resubmission written or a duplicate, under the resubmission's envelope; a `record_upserted` or `record_ingested` of a caller's write door at its type and key, `system:lakelands`'s; a dismiss, under the dismisser as `writer`, origin `authored`, its `source` set; a `source_forgotten`, a `values_removed` that selects its last version, a `values_erased` of its id, or a purge of its source or of its type of that source, `system:lakelands`'s. The fold keeps its id, last version, close and why, and drops its cells. |
 | `source_purged` | `source`, `type` (optional) | A purge of `source`, or of `source` from `type`, began (`docs/decisions/039-a-source-is-retracted-as-one.md`, 099): the act's first event, written by `system:lakelands`, its retirements following and its `act_whole` closing it. The fold keeps it, keyed by its position, in the list `sys:purged` with whether the act is whole, so a writer's open tells an act a crash stopped from a purge that took less. |
 | `act_whole` | `act` (a position) | The act that began at `act` is whole: appended last of its appends, so a reader of the log alone tells one whole from one a writer stopped between its parts. The fold marks the act's entry in `sys:purged` whole. |
 
@@ -1192,6 +1193,12 @@ lake.
   and at import, and found by `verify` and by the verification of an
   export where it was written below them (`fence_below`, §4).
 
+**Format 24** adds the kind `values_erased` (§2.3) and closes
+`values_removed`'s selection to its four forms
+(`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+Nothing else changes. A lake of format 23 is refused as `log_format`,
+as a lake of any other format is; its data comes in again by a new lake.
+
 **There is no downgrade.** A lake a release wrote is not opened by a
 release before it: an older release refuses it by the format on its
 first line. A backup is the way back.
@@ -1490,7 +1497,7 @@ lakelands#1676,
   `m` 60 s, `s` 1 s) in microseconds, which must come out whole: `1.5h`
   is `5400000000`, and `30d` is `2592000000000`.
 
-`docs/log-format/vectors/23/schema-hash.json` shows a view whose conditions
+`docs/log-format/vectors/24/schema-hash.json` shows a view whose conditions
 are written as text, its shape object with those conditions in typed
 form, and the resulting hash. A shape's `key` is the key the type's
 records carry, so a grouped view hashes alike whether its declaration

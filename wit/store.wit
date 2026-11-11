@@ -14,7 +14,7 @@ interface store {
     use types.{
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
-        compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report,
+        compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report, erase-report,
         thin, thin-report, thin-reply, judge, judge-reply,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
@@ -104,6 +104,14 @@ interface store {
         /// What `remove-values` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.
         remove-values-preflight: func(source: source-id, selection: selection) -> result<remove-report, error>;
+        /// Erase every hand's values of one record, one field of it, or
+        /// one quarantined row, at every position, in one append under the
+        /// writer's lock, an open entry closed `removed` beside it; the
+        /// record stays live and a key, a reference or an initial value is
+        /// never taken. With `require-shredded`, refused while a value
+        /// would be redacted only; with `preflight`, say what the act would
+        /// take, appending nothing.
+        erase-values: func(selection: selection, require-shredded: bool, report-id: option<string>, preflight: bool) -> result<erase-report, error>;
         /// Thin a type: take out of the projection every record whose field
         /// `thin.by` is certainly before `thin.before`, as one act in parts
         /// beside the writer, keeping the folds of the kept views over it;

@@ -453,6 +453,17 @@ mod tests {
         ) -> lakelands_api::Result<lakelands_api::write::RemoveReport> {
             self.inner.remove_values_preflight(source, selection).await
         }
+        async fn erase_values(
+            &self,
+            selection: &lakelands_api::write::Selection,
+            shredded: bool,
+            id: Option<&str>,
+            preflight: bool,
+        ) -> lakelands_api::Result<lakelands_api::write::EraseReport> {
+            self.inner
+                .erase_values(selection, shredded, id, preflight)
+                .await
+        }
         async fn compact(&self) -> lakelands_api::Result<lakelands_api::write::CompactReport> {
             self.inner.compact().await
         }

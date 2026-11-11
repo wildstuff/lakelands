@@ -275,7 +275,10 @@ fn padded(b: &str) -> bool {
 /// (`docs/log-format.md` §1.1); and `sealed.box` on any but a
 /// `record_ingested`, and a `record_ingested`'s `sealed` with no box, or
 /// one of a form a reader without the key refuses (`docs/log-format.md`
-/// §1.4). No door puts any there; a reader holds the
+/// §1.4); and a `values_removed` whose selection is a record or a
+/// quarantined row, which only a `values_erased` carries
+/// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+/// No door puts any there; a reader holds the
 /// rule for a log written by something else.
 #[doc(hidden)]
 pub fn misplaced(event: &Event) -> Option<Flaw> {
@@ -294,6 +297,18 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     }
     if event.origin == lakelands_api::record::Origin::Initial {
         return Some(Flaw::InitialOrigin);
+    }
+    if let EventBody::ValuesRemoved { selection, .. } = &event.body {
+        use lakelands_api::write::Selection;
+        let named = match selection {
+            Selection::Record { .. } => Some("record"),
+            Selection::Quarantined(_) => Some("quarantined"),
+            _ => None,
+        };
+        if let Some(selection) = named {
+            let selection = selection.to_owned();
+            return Some(Flaw::RemovedSelection { selection });
+        }
     }
     let kind = event_kind(&event.body);
     let seals = matches!(

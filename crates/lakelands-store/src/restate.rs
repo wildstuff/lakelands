@@ -99,7 +99,8 @@ impl Through<'_> {
             r.meta.get(f).is_some_and(|m| {
                 m.origin == Origin::Source
                     && m.source.as_ref().is_some_and(|s| {
-                        self.forgotten.contains(s) || self.removals.iter().any(|a| &a.source == s)
+                        self.forgotten.contains(s)
+                            || self.removals.iter().any(|a| a.source.as_ref() == Some(s))
                     })
             })
         })

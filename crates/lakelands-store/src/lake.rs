@@ -206,6 +206,7 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::ObjectSetChanged { .. }
         | EventBody::SourceForgotten { .. }
         | EventBody::ValuesRemoved { .. }
+        | EventBody::ValuesErased { .. }
         | EventBody::SourcePurged { .. }
         | EventBody::ActWhole { .. }
         | EventBody::ValuesThinned { .. }
@@ -293,6 +294,9 @@ pub struct Lake {
     /// what the log and the lists leave owed is sent then, as an open
     /// sends it (`crate::build::owed`, 097).
     regained: AtomicBool,
+    /// Whether an append closed a quarantined entry with its erase
+    /// (`erase_on_close`, 115): the turn's end sends the restate it owes.
+    pub(crate) erased: AtomicBool,
     /// The caller's handles to the lake: the store facade and the doors
     /// taken from it. The last one gone gives the lease up, though a job
     /// beside the writer still holds the lake while it runs.
@@ -1329,7 +1333,9 @@ impl Lake {
             .collect();
         let owed = |r: &crate::remove::Removal| acts.get(&r.at).is_some_and(|s| s == "owed");
         let mut restating: Vec<crate::remove::Removal> = Vec::new();
-        for act in (crate::remove::acts(self, view)?)
+        // Told, as a rebuild is: an erase of a record selects by the
+        // names the record bore (115).
+        for act in (crate::remove::told(self, view)?)
             .iter()
             .filter(|r| owed(r))
         {
@@ -1425,8 +1431,10 @@ impl Lake {
             .iter()
             .filter_map(crate::remove::Removal::of)
         {
-            self.keys.doom(&act.source, &act.keys);
-            self.keys.doom(&act.source, &act.apart);
+            if let Some(source) = &act.source {
+                self.keys.doom(source, &act.keys);
+                self.keys.doom(source, &act.apart);
+            }
         }
         for (source, state) in &forgotten {
             if state != "done" {
@@ -1677,6 +1685,12 @@ impl Lake {
     /// clearing the mark.
     pub(crate) fn took_lease_again(&self) -> bool {
         self.regained.swap(false, Ordering::AcqRel)
+    }
+
+    /// Whether an append erased a closed entry's values since the last
+    /// turn looked, clearing the mark.
+    pub(crate) fn erased_on_close(&self) -> bool {
+        self.erased.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -2176,6 +2190,7 @@ fn reads_a_record(body: &EventBody) -> bool {
         // a purge's list and its whole's mark.
         | EventBody::SourceForgotten { .. }
         | EventBody::ValuesRemoved { .. }
+        | EventBody::ValuesErased { .. }
         | EventBody::SourcePurged { .. }
         | EventBody::ActWhole { .. } => false,
     }

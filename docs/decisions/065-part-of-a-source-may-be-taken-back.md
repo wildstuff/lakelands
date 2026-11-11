@@ -13,7 +13,11 @@ forgets a source whole.
 
 `remove_values(source, selection)` removes the values the source wrote
 in the selection from the records they live in. There are four
-selections:
+selections, and they are the only ones a `values_removed` carries: the
+`record` and `quarantined` selections `Selection` also holds name no
+source, belong to the erase of
+`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`,
+and are refused here and as damage in a `values_removed` of the log:
 - **`written_before: T`:** the source's `record_ingested` events whose
   `known_at` is before `T`. The log's clock never falls, so this is every
   such event below one position, which the act names. What the source
@@ -521,3 +525,6 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
 - Amended by 100 (lakelands#1640), proposed for 0.23.0.
 - Amended by 114 (lakelands#1630), proposed for 0.24.0: a value a state
   move wrote does not keep a record, as an `initial` value does not.
+- Amended by 115 (lakelands#1736), proposed for 0.24.0: `Selection`
+  holds a record and a quarantined row too, which only the erase takes;
+  `remove_values` and a `values_removed` keep the four.

@@ -1783,6 +1783,14 @@ catalog! {
         RemoveNotShredded { source: SourceId, count: u64 } => "{count} value(s) of erasable fields of `{source}` the removal takes would be redacted only, not shredded: in plaintext, or sealed under a version of its key that also seals values outside the selection; nothing is removed",
         /// A removal's report of another removal, or of a selection the log has moved past.
         RemoveReportStale => "that report is not of this removal at its position; run the preflight again",
+        /// A removal whose selection is a record's or a quarantined entry's: that is an erase (115).
+        RemoveErases => "a selection of a record, a field of one, or a quarantined entry is an erase, not a removal; erase it with `erase_values`",
+        /// An erase whose selection names a source's values, not a record's or a quarantined entry's (115).
+        EraseSelection => "an erase selects a record, a field of one, or a quarantined entry; take a source's values back with `remove_values`",
+        /// An erase asked to shred that would redact values only (115).
+        EraseNotShredded { count: u64 } => "{count} value(s) the erase takes would be redacted only, not shredded: an erase shreds only a quarantined entry's delivery key, where that key seals nothing outside the entry; nothing is erased",
+        /// An erase's report of another erase, or of a selection the log has moved past.
+        EraseReportStale => "that report is not of this erase at its position; run the preflight again",
         /// A record with no value for a required field.
         Required { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}` requires a value for `{field}`",
         /// A write that would leave a record breaking its type's

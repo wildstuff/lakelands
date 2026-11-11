@@ -1,0 +1,193 @@
+{
+  "about": "One append of three `record_ingested` of `erp`, positions 101 to 103 after the last event of `further.json`, in the stored form a writer writes (log-format §1.2): a frame line holding every member the three share, top-level and one level into `body`, and each event's line holding the rest; none holds `position` or `prev`, which the event before it gives. `events` are the events the lines restore to, canonical, with their hashes; each of `breaks` is the lines of one segment that a reader refuses, at the line `at` (null: at the segment's end), for the flaw it names.",
+  "after": {
+    "position": 100,
+    "hash": "80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca"
+  },
+  "stored": [
+    "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+    "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"15be0e28f676feb0d7929e4420f5e05f28d189c304cf7acd3033e9940d2e213d\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":24}",
+    "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"1355810f85a3bb17da5ca75b01df4fba406e6cd7ac3bf8ee306e3e65a6d08b84\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":24}",
+    "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"c6f180dd74892540ec6972f598d79f6d772b60a5de8b8ca7d611865c4f5059e1\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":24}"
+  ],
+  "events": [
+    {
+      "line": "{\"body\":{\"key\":\"INV-4\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"15be0e28f676feb0d7929e4420f5e05f28d189c304cf7acd3033e9940d2e213d\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":101,\"prev\":\"80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca\",\"source\":\"erp\",\"v\":24,\"writer\":\"service:importer\"}",
+      "hash": "15be0e28f676feb0d7929e4420f5e05f28d189c304cf7acd3033e9940d2e213d"
+    },
+    {
+      "line": "{\"body\":{\"key\":\"INV-5\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"1355810f85a3bb17da5ca75b01df4fba406e6cd7ac3bf8ee306e3e65a6d08b84\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":102,\"prev\":\"15be0e28f676feb0d7929e4420f5e05f28d189c304cf7acd3033e9940d2e213d\",\"source\":\"erp\",\"v\":24,\"writer\":\"service:importer\"}",
+      "hash": "1355810f85a3bb17da5ca75b01df4fba406e6cd7ac3bf8ee306e3e65a6d08b84"
+    },
+    {
+      "line": "{\"body\":{\"key\":\"INV-6\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"c6f180dd74892540ec6972f598d79f6d772b60a5de8b8ca7d611865c4f5059e1\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":103,\"prev\":\"1355810f85a3bb17da5ca75b01df4fba406e6cd7ac3bf8ee306e3e65a6d08b84\",\"source\":\"erp\",\"v\":24,\"writer\":\"service:importer\"}",
+      "hash": "c6f180dd74892540ec6972f598d79f6d772b60a5de8b8ca7d611865c4f5059e1"
+    }
+  ],
+  "breaks": [
+    {
+      "shows": "frame_in_frame",
+      "about": "A frame line stands among the lines the frame before it covers.",
+      "after": {
+        "position": 100,
+        "hash": "80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca"
+      },
+      "stored": [
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":24}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":24}"
+      ],
+      "refused": {
+        "at": 2,
+        "flaw": {
+          "code": "frame_in_frame"
+        }
+      }
+    },
+    {
+      "shows": "framed_twice",
+      "about": "The second event's line holds `body.type`, which its frame holds.",
+      "after": {
+        "position": 100,
+        "hash": "80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca"
+      },
+      "stored": [
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"},\"type\":\"invoice\"},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":24}"
+      ],
+      "refused": {
+        "at": 2,
+        "flaw": {
+          "code": "framed_twice",
+          "member": "body.type"
+        }
+      }
+    },
+    {
+      "shows": "frame_short",
+      "about": "The segment ends after two of the three lines its frame covers.",
+      "after": {
+        "position": 100,
+        "hash": "80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca"
+      },
+      "stored": [
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":24}"
+      ],
+      "refused": {
+        "at": null,
+        "flaw": {
+          "code": "frame_short",
+          "events": 3,
+          "held": 2
+        }
+      }
+    },
+    {
+      "shows": "not_a_frame",
+      "about": "A line holds `events` and `frame`, and its frame holds `position`, which a frame never holds.",
+      "after": {
+        "position": 100,
+        "hash": "80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca"
+      },
+      "stored": [
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":82,\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":24}"
+      ],
+      "refused": {
+        "at": 0,
+        "flaw": {
+          "code": "not_a_frame"
+        }
+      }
+    },
+    {
+      "shows": "format_other",
+      "about": "A frame of this format covers a full event of the format before: the line's format is read first, and the line is refused for it.",
+      "after": {
+        "position": 100,
+        "hash": "80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca"
+      },
+      "stored": [
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-4\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":82,\"prev\":\"1352b1add383ab4b80c309f5e33efee1351e0e76d1318aca64a4b94a6abef72e\",\"source\":\"erp\",\"v\":23,\"writer\":\"service:importer\"}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":24}"
+      ],
+      "refused": {
+        "at": 1,
+        "flaw": {
+          "code": "format_other",
+          "reads": 24,
+          "v": 23
+        }
+      }
+    },
+    {
+      "shows": "position",
+      "about": "The second event's line holds a `position` that is not the one after the event before it.",
+      "after": {
+        "position": 100,
+        "hash": "80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca"
+      },
+      "stored": [
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"position\":106,\"v\":24}",
+        "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":24}"
+      ],
+      "refused": {
+        "at": 2,
+        "flaw": {
+          "code": "position",
+          "expected": 102,
+          "found": 106
+        }
+      }
+    },
+    {
+      "shows": "prev_hash",
+      "about": "The second event's line holds a `prev` that is not the hash of the event before it.",
+      "after": {
+        "position": 100,
+        "hash": "80990f4566d1439e0e7c70de1d642e7c98041c2e80647e2e69a2a122340e46ca"
+      },
+      "stored": [
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":24}"
+      ],
+      "refused": {
+        "at": 2,
+        "flaw": {
+          "code": "prev_hash"
+        }
+      }
+    },
+    {
+      "shows": "start_unheld",
+      "about": "The lines stand at a segment's start, and its first event line holds neither `position` nor `prev`.",
+      "after": null,
+      "stored": [
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":24}",
+        "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":24}",
+        "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":24}"
+      ],
+      "refused": {
+        "at": 1,
+        "flaw": {
+          "code": "start_unheld"
+        }
+      }
+    }
+  ]
+}

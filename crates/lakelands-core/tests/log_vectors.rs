@@ -193,7 +193,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 793, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 821, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -395,7 +395,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 89] = [
+const SHOWN: [&str; 93] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -485,10 +485,14 @@ const SHOWN: [&str; 89] = [
     "setting_dated",
     "setting_corrected",
     "setting_at",
+    "erased_record",
+    "erased_field",
+    "erased_quarantined",
+    "erased_keys",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 96;
+const LAST: u64 = 100;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -910,6 +914,44 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             };
             matches!(&event.body, B::QuarantineClosed { why, .. } if *why == want)
                 && event.delivery.is_none()
+        }
+        // An erase by record, by field, by quarantined id, and one that
+        // destroys a version and a key apart (115).
+        "erased_record" | "erased_field" | "erased_quarantined" | "erased_keys" => {
+            use lakelands_api::write::Selection as S;
+            let B::ValuesErased {
+                selection,
+                keys,
+                apart,
+            } = &event.body
+            else {
+                return false;
+            };
+            match (what, selection) {
+                (
+                    "erased_record",
+                    S::Record {
+                        ty,
+                        key,
+                        field: None,
+                    },
+                ) => ty == "invoice" && key == "INV-10" && keys.is_empty() && apart.is_empty(),
+                (
+                    "erased_field",
+                    S::Record {
+                        ty,
+                        key,
+                        field: Some(f),
+                    },
+                ) => ty == "invoice" && key == "INV-9" && f == "amount" && keys.is_empty(),
+                ("erased_quarantined", S::Quarantined(id)) => {
+                    id.source == "erp" && id.delivery == "q-1" && id.index == 0
+                }
+                ("erased_keys", S::Record { key, .. }) => {
+                    key == "c5" && *keys == [KeyId::from("1")] && *apart == [KeyId::from("a1")]
+                }
+                _ => false,
+            }
         }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }

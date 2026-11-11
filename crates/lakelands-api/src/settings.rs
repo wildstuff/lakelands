@@ -144,6 +144,11 @@ pub const SETTINGS: &[Setting] = &[
         ..lake("zone", PerType::No, "\"UTC\"")
     },
     Setting {
+        range: "`true` or `false`",
+        says: "Has every ordinary close of a quarantined entry — landed, resubmitted or dismissed — erase the entry's cells in the same append, a `values_erased` written `system:lakelands` beside the close.",
+        ..lake("erase_on_close", PerType::No, "false")
+    },
+    Setting {
         range: "a count, at most `max_limit`",
         says: "How many rows a list-shaped read returns when the caller names no limit.",
         ..location("limits.default_limit", "50")

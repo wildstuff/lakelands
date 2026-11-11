@@ -46,6 +46,7 @@ mod describe;
 mod durations;
 mod embeddings;
 pub(in crate::conformance) mod erasable;
+mod erase;
 mod export;
 mod feed;
 mod fields;
@@ -844,6 +845,30 @@ pub const ALL: &[Check] = &[
     scrubbed::SWEEP_IN_TURNS,
     scrubbed::RECLAIM_IN_TURNS,
     scrubbed::TAIL_JUDGED_BY_ITS_KEYS,
+    erase::ERASE_RECORD,
+    erase::ERASE_FIELD,
+    erase::ERASE_KEEPS,
+    erase::ERASE_EVERY_HAND,
+    erase::ERASE_STAYS_LIVE,
+    erase::ERASE_NOTHING,
+    erase::ERASE_QUARANTINED,
+    erase::ERASE_CLOSED_ENTRY,
+    erase::ERASE_SHREDDED,
+    erase::ERASE_APART,
+    erase::ERASE_NOT_REMOVE,
+    erase::ERASE_ON_DISMISS,
+    erase::ERASE_ON_LANDING,
+    erase::ERASE_CARRIED,
+    erase::ERASE_VERIFIES,
+    erase::ERASE_SOURCES,
+    erase::ERASE_NOT_AS_REMOVED,
+    erase::ERASE_FOLLOWS_REKEY,
+    erase::ERASE_TAKEN_KEY,
+    erase::ERASE_NOT_SYS,
+    erase::ERASE_PREFLIGHT,
+    erase::ERASE_ON_RESUBMIT,
+    erase::ERASE_NOT_ON_ACT,
+    erase::ERASE_ON_CLOSE_APART,
     removed::REMOVED_BEFORE,
     removed::REMOVED_DELIVERY,
     removed::REMOVED_SET,
@@ -1075,7 +1100,7 @@ pub const ALL: &[Check] = &[
     builds::BUILD_REBUILD_SAME_LAKE,
     builds::BUILD_EXPORT_IMPORT_SAME_LAKE,
     kept_builds::KEPT_BUILD_READ_ANSWERS_AS_BEFORE,
-    kept_lake::LAKE_23_READ,
+    kept_lake::LAKE_23_REFUSED,
     kept_builds::KEPT_BUILD_WRITE_BESIDE,
     kept_builds::KEPT_BUILD_WRITES_GO_ON,
     kept_builds::KEPT_BUILD_RESTART_FINISHES,

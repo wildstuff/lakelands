@@ -213,7 +213,8 @@ struct Envelope {
 
 /// Of an event's body, its kind, the fence a `lease_taken` names, the
 /// source a `source_forgotten` forgot or a `values_removed` took from, and
-/// the versions of its key and the keys sealed apart the latter destroyed.
+/// the versions of its key and the keys sealed apart the latter, or a
+/// `values_erased`, destroyed.
 #[derive(serde::Deserialize)]
 struct Body {
     kind: String,
@@ -225,6 +226,24 @@ struct Body {
     keys: Vec<lakelands_api::id::KeyId>,
     #[serde(default)]
     apart: Vec<lakelands_api::id::KeyId>,
+    /// A `values_erased`'s selection, read for the source of the
+    /// quarantined row it names.
+    #[serde(default)]
+    selection: Option<Erased>,
+}
+
+/// Of a `values_erased`'s selection, the quarantined id's source, where it
+/// names one.
+#[derive(serde::Deserialize)]
+struct Erased {
+    #[serde(default)]
+    quarantined: Option<Quarantined>,
+}
+
+/// The source of a quarantined id.
+#[derive(serde::Deserialize)]
+struct Quarantined {
+    source: SourceId,
 }
 
 /// Of an event's `sealed`, the version of the key and the source of a
@@ -348,6 +367,7 @@ fn scan(
 ) -> Result<(Vec<Digest>, Needed)> {
     let (mut sealed, mut forgot, mut shredded) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    let mut erased = BTreeSet::new();
     let mut fence = 0;
     let mut digests = Vec::with_capacity(files.len());
     for path in files {
@@ -389,6 +409,18 @@ fn scan(
                 let taken = (event.body.keys.iter()).chain(&event.body.apart);
                 shredded.extend(taken.map(|k| (source.clone(), k.clone())));
             }
+            // The apart keys an erase destroyed are the delivery's own: of
+            // the quarantined id's source, and of none for a record's (115).
+            if event.body.kind == "values_erased" {
+                let of = (event.body.selection.as_ref()).and_then(|s| s.quarantined.as_ref());
+                match of {
+                    Some(q) => {
+                        let apart = event.body.apart.iter();
+                        shredded.extend(apart.map(|k| (q.source.clone(), k.clone())));
+                    }
+                    None => erased.extend(event.body.apart.iter().cloned()),
+                }
+            }
             // PostgreSQL keeps an id as its 16 bytes (086); a log another
             // writer made may hold one of another form.
             if !event.id.of_form() {
@@ -412,7 +444,7 @@ fn scan(
         !forgot.contains(s)
             && !ks
                 .iter()
-                .any(|k| shredded.contains(&(s.clone(), k.clone())))
+                .any(|k| erased.contains(k) || shredded.contains(&(s.clone(), k.clone())))
     };
     let needed: BTreeSet<_> = (sealed.into_iter().filter(kept))
         .flat_map(|(s, ks)| ks.into_iter().map(move |k| (s.clone(), k)))

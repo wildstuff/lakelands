@@ -736,6 +736,30 @@ pub trait LakeStore: Send + Sync {
         selection: &crate::write::Selection,
     ) -> Result<crate::write::RemoveReport>;
 
+    /// Erase the values of one record, one field of it, or one quarantined
+    /// row, of every hand that wrote them, at every position
+    /// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`):
+    /// append one `values_erased`, and for an open entry its close
+    /// `removed` in the same append, under the writer's lock. A key field,
+    /// a reference field, an `initial` value and a `sys.` type are never
+    /// taken, and the record stays live. An erase that takes nothing
+    /// appends nothing. With `require_shredded`, refused while a value it
+    /// takes would be redacted only; with a preflight's id, refused unless
+    /// that report is of this erase at the head it was read at. On a
+    /// `preflight`, says what the act would take, appending nothing. A
+    /// handle that is no host's, this default, answers it unbound.
+    async fn erase_values(
+        &self,
+        selection: &crate::write::Selection,
+        require_shredded: bool,
+        report_id: Option<&str>,
+        preflight: bool,
+    ) -> Result<crate::write::EraseReport> {
+        let _ = (selection, require_shredded, report_id, preflight);
+        let op = "erase_values".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
+
     /// Thin `ty`: take out of the projection every record whose field
     /// `thin.by` is certainly before `thin.before`, as one act in parts
     /// beside the writer, keeping the folds of the kept views over it; or,

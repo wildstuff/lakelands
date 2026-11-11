@@ -37,6 +37,18 @@ impl Lake {
         reads: Reads,
     ) -> Result<Vec<Event>> {
         self.durable(w, &lease, &stored)?;
+        // An erase of a quarantined row, the act's or a close's, destroys
+        // its delivery's apart keys once it is durable (115).
+        for e in &events {
+            if let EventBody::ValuesErased {
+                selection: lakelands_api::write::Selection::Quarantined(id),
+                apart,
+                ..
+            } = &e.body
+            {
+                self.keys.destroy_apart(&id.source, apart)?;
+            }
+        }
         self.landed(w, events, reads)
     }
 

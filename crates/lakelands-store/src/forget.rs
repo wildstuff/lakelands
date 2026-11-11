@@ -72,7 +72,7 @@ use crate::lake::{Lake, Staged, Writer, every, forgotten_list, indexed};
 use crate::log::Draft;
 use crate::ontology::Ontology;
 use crate::purge::{brought_by, co_owned, made_by};
-use crate::remove::Removal;
+use crate::remove::{Link, Removal};
 use crate::road::{self, Job, Reach, Turned};
 use crate::writes;
 
@@ -587,6 +587,49 @@ impl History {
             }
         }
         (renames.fold(ty, |ty, r| renamed(r, ty)), key)
+    }
+
+    /// The names the record of `ty` at `key` at `at` bore before it, the
+    /// latest first, each from the position it holds from: [`Self::moved`]
+    /// walked back. A key another record held before a re-key gave it to
+    /// this one ends the chain there (115).
+    pub(crate) fn chain(&self, ty: &TypeName, key: &RecordKey, at: Position) -> Vec<Link> {
+        let (mut ty, mut key) = (ty.clone(), key.clone());
+        let mut chain = Vec::new();
+        let mut renames = self.renames.iter().rev().filter(|r| r.at < at).peekable();
+        for (p, moves) in self.rekeys.iter().rev().filter(|(p, _)| *p < at) {
+            while let Some(r) = renames.next_if(|r| r.at >= *p) {
+                ty = unnamed(r, &mut chain, ty, &key);
+            }
+            let from = moves.iter().find(|((t, _), to)| t == &ty && *to == &key);
+            match from {
+                Some(((_, from), _)) => {
+                    chain.push((*p, ty.clone(), key.clone()));
+                    key = from.clone();
+                }
+                None if moves.contains_key(&(ty.clone(), key.clone())) => {
+                    chain.push((*p, ty, key));
+                    return chain;
+                }
+                None => {}
+            }
+        }
+        for r in renames {
+            ty = unnamed(r, &mut chain, ty, &key);
+        }
+        chain.push((Position::GENESIS, ty, key));
+        chain
+    }
+}
+
+/// `ty` before the rename `r`, the link from it pushed where it renamed it.
+fn unnamed(r: &Renamed, chain: &mut Vec<Link>, ty: TypeName, key: &RecordKey) -> TypeName {
+    match &r.to {
+        Some(to) if *to == ty => {
+            chain.push((r.at, ty, key.clone()));
+            r.ty.clone()
+        }
+        _ => ty,
     }
 }
 

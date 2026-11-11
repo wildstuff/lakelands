@@ -1013,11 +1013,12 @@ impl Mirror {
             .poll(Position(from), &filter, self.batch)
             .await
             .map_err(|e| format!("the source's feed failed: {e}"))?;
-        // A forgetting and a removal are about no type: they are asked of
-        // the feed apart, over the batch's range, and met in the log's order
-        // (058, 065).
+        // A forgetting, a removal and an erase are asked of the feed apart,
+        // over the batch's range, and met in the log's order (058, 065, 115).
         let forgot = FeedFilter {
-            kinds: vec!["source_forgotten".to_owned(), "values_removed".to_owned()],
+            kinds: ["source_forgotten", "values_removed", "values_erased"]
+                .map(str::to_owned)
+                .to_vec(),
             ..FeedFilter::default()
         };
         let acts = feed
@@ -1041,6 +1042,11 @@ impl Mirror {
             if let EventBody::ValuesRemoved { source, .. } = &e.body {
                 self.flush(&mut run).await?;
                 self.taken(source, e.position, true).await?;
+                continue;
+            }
+            if let EventBody::ValuesErased { selection, .. } = &e.body {
+                self.flush(&mut run).await?;
+                self.erased(selection, e.position).await?;
                 continue;
             }
             if let EventBody::ValueTypeMigrated { types, .. } = &e.body {
@@ -1673,6 +1679,35 @@ impl Mirror {
                 );
                 self.stop(&[s], p.next(), why).await?;
             }
+        }
+        Ok(())
+    }
+
+    /// At the source's erase at `p` of values of one record, or of one
+    /// field of it: the type, if it runs, stops past the erase, since its
+    /// copy of the record may hold what every hand wrote there, under the
+    /// mirror's own source and out of the erase's reach; a restart goes on
+    /// once the host has copied it again or erased the copy in the target
+    /// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+    /// A quarantined row is never copied, so its erase stops nothing.
+    async fn erased(
+        &mut self,
+        selection: &lakelands_api::write::Selection,
+        p: Position,
+    ) -> Result<(), String> {
+        let lakelands_api::write::Selection::Record { ty, key, .. } = selection else {
+            return Ok(());
+        };
+        let runs = (self.kept.types.get(ty))
+            .is_some_and(|s| s.stopped.is_none() && p.0 >= s.next && self.map.contains_key(ty));
+        if runs {
+            let (target, lake) = (&self.map[ty].target, self.source.lake());
+            let why = format!(
+                "the source erased values of `{ty}` `{key}`, which `{ty}`'s copies may hold in \
+                 `{target}` under `mirror:{lake}:{ty}`: copy the type again, or erase the copy \
+                 in the target, then restart"
+            );
+            self.stop(std::slice::from_ref(ty), p.next(), why).await?;
         }
         Ok(())
     }

@@ -1425,7 +1425,7 @@ pub(super) async fn quarantine_at(
 }
 
 /// `record` resubmitting `id`.
-fn resubmitting(id: &QuarantineId, record: SourceRecord) -> SourceRecord {
+pub(super) fn resubmitting(id: &QuarantineId, record: SourceRecord) -> SourceRecord {
     SourceRecord {
         delivery: None,
         resubmits: Some(Resubmits {

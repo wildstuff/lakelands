@@ -2141,8 +2141,12 @@ pub struct RecordField {
     pub field: FieldName,
 }
 
-/// Which of a source's values `LakeStore::remove_values` takes back
-/// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+/// Which values an act takes back: the first four are a source's, which
+/// `LakeStore::remove_values` takes
+/// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`); a record,
+/// a field of it, or a quarantined row are every hand's, which
+/// `LakeStore::erase_values` takes
+/// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Selection {
@@ -2156,6 +2160,22 @@ pub enum Selection {
     /// What it wrote of what it says it observed before a time: each event
     /// whose `seen_at` is before it, wherever in the log it stands.
     SeenBefore(Timestamp),
+    /// For `LakeStore::erase_values` only: every value every hand wrote
+    /// into one record, through every key it held, or into one field of it
+    /// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+    Record {
+        /// The record's type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// Its key.
+        key: RecordKey,
+        /// The one field whose values go; absent for every erasable field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field: Option<FieldName>,
+    },
+    /// For `LakeStore::erase_values` only: every version of one
+    /// quarantined record.
+    Quarantined(crate::quarantine::QuarantineId),
 }
 
 /// The values one field of one type loses to a removal.
@@ -2294,6 +2314,127 @@ pub struct RemoveReport {
     pub quarantined: Vec<crate::quarantine::TypeQuarantined>,
 }
 
+/// What [`crate::catalog::LakeStore::erase_values`] took, or on a
+/// preflight would take: the values of one record, one field of it, or
+/// one quarantined row, of every hand that wrote them
+/// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EraseReport {
+    /// The selection, as asked.
+    pub selection: Selection,
+    /// Per type, the records holding a value it erases.
+    pub types: Vec<ForgetRecords>,
+    /// Per type and field, in that order, the values it erases.
+    pub fields: Vec<RemovedField>,
+    /// The writes it selects: each version of the record, or of the
+    /// quarantined id, before the act.
+    pub versions: u64,
+    /// The versions of the owning source's key it destroys, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<KeyId>,
+    /// The keys of deliveries sealed apart it destroys, in id order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apart: Vec<KeyId>,
+    /// Per type, the records it reached that keep a value it never takes:
+    /// a key field, a reference field or an `initial` value. The record
+    /// stays live all the same.
+    pub kept: Vec<ForgetRecords>,
+    /// Per relation, the live records naming a record it erases from.
+    pub references: Vec<PurgeReference>,
+    /// The values it erases and does not shred: in plaintext, or sealed
+    /// under a key that also seals a value outside the selection.
+    /// `require_shredded` refuses the act while any are.
+    pub unshredded: u64,
+    /// The computed fields that read a field it erases values of, each
+    /// computed again, in type then field order.
+    pub recomputed: Vec<RecordField>,
+    /// The views over a type it erases values from, computed again.
+    pub views: Vec<TypeName>,
+    /// The constraints the record would be left breaking. The act is not
+    /// refused for them.
+    pub breaches: Vec<Breach>,
+    /// The events the act's restate folds again: the log's length.
+    pub log_events: u64,
+    /// The head after the act, or the head the preflight read.
+    pub position: Position,
+    /// Names a preflight's report; `erase_values` may repeat it. Empty on
+    /// the act's own report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub report_id: String,
+    /// The open entry the act closed `removed` in the same append, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantined: Option<crate::quarantine::QuarantineId>,
+    /// The sources that wrote a value it erases, in id order: a mirror of
+    /// each stops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SourceId>,
+}
+
+impl EraseReport {
+    /// The report in sentences, for a host to tell its operator.
+    pub fn said(&self) -> Vec<String> {
+        let what = match &self.selection {
+            Selection::Record {
+                ty,
+                key,
+                field: Some(f),
+            } => format!("`{ty}.{f}` of `{key}`"),
+            Selection::Record { ty, key, .. } => format!("the `{ty}` record `{key}`"),
+            Selection::Quarantined(id) => format!("the quarantined row `{id}`"),
+            _ => "a source's selection".to_owned(),
+        };
+        let n = self.versions;
+        let mut said = vec![format!(
+            "{} of {what} {} selected.",
+            counted(n, "version"),
+            be(n)
+        )];
+        let erased: u64 = self.fields.iter().map(|f| f.redacted).sum();
+        if erased == 0 {
+            said.push("Nothing is left to erase; nothing is appended.".to_owned());
+        }
+        for f in &self.fields {
+            let (ty, field) = (&f.ty, &f.field);
+            let (n, read) = (
+                counted(f.redacted, "value"),
+                verb(f.redacted, "reads", "read"),
+            );
+            said.push(format!(
+                "{n} of `{ty}.{field}` {read} as erased at every position; the log keeps the bytes."
+            ));
+        }
+        let keys = self.keys.len() + self.apart.len();
+        if keys > 0 {
+            let n = keys as u64;
+            said.push(format!("{} {} destroyed.", counted(n, "key"), be(n)));
+        }
+        if self.unshredded > 0 {
+            let n = self.unshredded;
+            said.push(format!(
+                "{} {} redacted only, its key still live or none.",
+                counted(n, "value"),
+                be(n)
+            ));
+        }
+        for k in &self.kept {
+            let (n, ty) = (k.records, &k.ty);
+            said.push(format!(
+                "{} of `{ty}` {} a key, a reference or an initial value, and {} live.",
+                counted(n, "record"),
+                verb(n, "keeps", "keep"),
+                verb(n, "stays", "stay")
+            ));
+        }
+        if let Some(id) = &self.quarantined {
+            said.push(format!("The quarantined row `{id}` is closed, removed."));
+        }
+        for s in &self.sources {
+            said.push(format!("A mirror of `{s}` stops."));
+        }
+        said
+    }
+}
+
 impl RemoveReport {
     /// The report in sentences, for a host to tell its operator.
     pub fn said(&self) -> Vec<String> {
@@ -2320,6 +2461,9 @@ impl RemoveReport {
                 format!("of {} {n} ({}{more})", ds.len(), named.join(", "))
             }
             (Selection::SeenBefore(t), _) => format!("seen before {t}"),
+            (Selection::Record { .. } | Selection::Quarantined(_), _) => {
+                "of no source's selection".to_owned()
+            }
         };
         let (events, are) = (counted(self.events, "event"), be(self.events));
         let mut said = vec![format!(

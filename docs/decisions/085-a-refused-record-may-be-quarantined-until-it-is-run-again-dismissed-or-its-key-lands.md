@@ -301,8 +301,10 @@ that closed it:
 - `dismissed`: its reader dismissed it. A repeat answers the first
   close's position and appends nothing.
 - `forgotten`, `removed`, `purged`: its source was forgotten (058), the
-  values of its last version were taken back (065), or its source, or
-  its type of that source, was purged (039).
+  values of its last version were taken back (065) or erased, the erase
+  reaching every version of the id
+  (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`),
+  or its source, or its type of that source, was purged (039).
 
 **A resubmission that is a duplicate appends.** 016 holds that a record
 that changes nothing appends nothing. A resubmission that changes
@@ -566,7 +568,9 @@ of a format step.
 - **Not a query language.** The listing filters by source, type,
   delivery and state, and nothing else.
 - **Not a restriction** (006's `restricted`), and not an erasure: a
-  dismiss closes, and only the acts on a source erase.
+  close erases nothing by itself. The acts on a source erase, and so
+  does the erase of 115, which the lake setting `erase_on_close` appends
+  beside a dismiss's, a landing's or a resubmission's close.
 - **Not quarantined** are the refusals the table marks no: those of the
   call, of the source, of a type the lake does not declare, and of a key
   the log cannot hold.
@@ -580,3 +584,5 @@ of a format step.
 - The host's door, and the run and line that key a record
   (lakelands#1596). Each writes only from what a caller newly names; the
   stored shape is unchanged, and the log stays at format 22.
+- Amended by 115 (lakelands#1736), proposed for 0.24.0: `removed` also
+  names an erase, and a close may erase in its append.

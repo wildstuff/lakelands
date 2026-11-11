@@ -235,6 +235,10 @@ impl Holding {
         // open owes: its build finishes beside the writer from here on.
         if lake.took_lease_again() {
             crate::road::resume(&lake, crate::road::OWED);
+        } else if lake.erased_on_close() {
+            // An entry closed with its erase owes the restate an erase
+            // owes (115).
+            crate::road::resume(&lake, &[crate::remove::settle_owed]);
         }
     }
 

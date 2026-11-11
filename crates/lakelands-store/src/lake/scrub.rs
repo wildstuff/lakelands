@@ -782,8 +782,13 @@ pub(crate) fn plan(
     let forgotten: BTreeSet<&SourceId> = set.iter().collect();
     let mut sources: Vec<SourceId> = set.to_vec();
     for act in acts {
-        if !sources.contains(&act.source) {
-            sources.push(act.source.clone());
+        match &act.source {
+            Some(s) if !sources.contains(s) => sources.push(s.clone()),
+            _ => {}
+        }
+        // An erase of a record takes the records of its chain (115).
+        for (_, ty, key) in act.chain.iter().flatten() {
+            keys.insert((ty.clone(), key.clone()));
         }
     }
     crate::forget::each_of(lake, view, &sources, |i, e| {
@@ -798,7 +803,7 @@ pub(crate) fn plan(
         // The records a removal takes: those of the events its selection
         // picks. An output it sealed under a key the act destroyed is
         // dropped and recorded again, as a forgotten source's is.
-        for act in acts.iter().filter(|a| &a.source == source) {
+        for act in acts.iter().filter(|a| a.source.as_ref() == Some(source)) {
             if act.selects(e)
                 && let EventBody::RecordIngested { ty, key, .. }
                 | EventBody::RecordQuarantined { ty, key, .. } = &e.body
@@ -1606,8 +1611,10 @@ impl Restate {
                 .iter()
                 .filter(|r| acts.get(&r.at).is_some_and(|s| s == "owed"))
             {
-                lake.keys.destroy_versions(&act.source, &act.keys)?;
-                lake.keys.destroy_apart(&act.source, &act.apart)?;
+                if let Some(source) = &act.source {
+                    lake.keys.destroy_versions(source, &act.keys)?;
+                    lake.keys.destroy_apart(source, &act.apart)?;
+                }
             }
         }
         let listed = crate::remove::told(lake, view.as_ref())?;

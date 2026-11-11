@@ -2546,7 +2546,7 @@ fn an_archive_of_an_older_log_format_is_refused_as_a_format_by_verify_restore_an
     assert_eq!(from.run(&["export", "--to", &dir]).code, 0);
     as_release_of_format_22(&dir);
     let format = "lake `finance` is written in log format 22, and this release reads log \
-                  formats 23 to 23 and writes 23";
+                  formats 24 to 24 and writes 24";
     let way_back = "a release that reads log format 22; it is not damaged";
 
     // `restore --check` verifies without opening: exit status 1, said as
@@ -3268,6 +3268,7 @@ search_weights.<type>                   lake      null (default)
 view_kept.<type>                        lake      false (default)
 key_period                              lake      null (default)
 zone                                    lake      \"UTC\" (default)
+erase_on_close                          lake      false (default)
 limits.default_limit                    location  50 (default)
 limits.max_limit                        location  1000 (default)
 limits.max_depth                        location  16 (default)
