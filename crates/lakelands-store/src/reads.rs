@@ -594,7 +594,7 @@ fn needs_store(e: &Expr) -> bool {
     matches!(
         e,
         Expr::Call {
-            func: Now | Today | Setting | KnownAt | SeenAt | Matches | InSet,
+            func: Now | Today | Setting | KnownAt | SeenAt | Matches | Extract | InSet,
             ..
         }
     ) || expr::children(e).any(needs_store)

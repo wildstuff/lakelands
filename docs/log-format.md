@@ -1417,7 +1417,7 @@ A literal is `{ "type": "null" }`, `{ "type": "bool", "value": true }`,
 `func` is one of `now`, `today`, `known_at`, `seen_at`, `previous`,
 `setting`, `changed`, `exists`, `coalesce`, `if`, `lower`, `upper`, `trim`, `len`,
 `concat`, `substr`, `contains`, `replace`, `starts_with`, `matches`,
-`abs`, `round`, `count`, `sum`, `min`, `max`, `avg`, spelled in the text
+`extract`, `abs`, `round`, `count`, `sum`, `min`, `max`, `avg`, spelled in the text
 form exactly as here; and `date_bucket`, whose two
 arguments are the value and its unit as a string literal (`day`, `week`,
 `month`, `quarter` or `year`), answering the instant at which the UTC

@@ -1283,6 +1283,8 @@ catalog! {
         InEmpty => "an `in` lists one value at least",
         /// An `exists` outside a verb's `requires` and set values.
         ExistsHere => "exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at",
+        /// An `extract` whose pattern is no quoted text literal.
+        ExtractTakesLiteral => "extract() takes its pattern as a quoted text literal, which the check reads before any record runs",
         /// A `preceding` outside a constraint and a trigger's `when`, or
         /// over a view's rows.
         PrecedingHere => "preceding() has meaning in a type's constraint and in the `when` of a trigger on a type that is no view, over the record before it in its series",

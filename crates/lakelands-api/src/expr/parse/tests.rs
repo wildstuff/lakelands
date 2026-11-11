@@ -176,7 +176,7 @@ fn printing_adds_only_needed_parentheses() {
 }
 
 /// Every function of the contract. A function added to `Func` is added here.
-const ALL_FUNCS: [Func; 29] = [
+const ALL_FUNCS: [Func; 30] = [
     Func::Now,
     Func::Today,
     Func::KnownAt,
@@ -198,6 +198,7 @@ const ALL_FUNCS: [Func; 29] = [
     Func::Replace,
     Func::StartsWith,
     Func::Matches,
+    Func::Extract,
     Func::Abs,
     Func::Round,
     Func::DateBucket,

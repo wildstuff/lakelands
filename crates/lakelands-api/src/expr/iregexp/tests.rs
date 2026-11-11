@@ -61,3 +61,18 @@ fn a_dot_is_any_character_but_a_line_break() {
     assert!(!whole(".", "\n"));
     assert!(!whole(".", "\r"));
 }
+
+#[test]
+fn an_extract_pattern_takes_the_leftmost_match_wherever_it_lies() {
+    fn search(pattern: &str, text: &str) -> Option<String> {
+        regex::Regex::new(&translate_search(pattern).unwrap())
+            .unwrap()
+            .find(text)
+            .map(|m| m.as_str().to_owned())
+    }
+    assert_eq!(search("a+", "caaab").as_deref(), Some("aaa"));
+    assert_eq!(search("a|ab", "ab").as_deref(), Some("a"));
+    assert_eq!(search("ab|a", "ab").as_deref(), Some("ab"));
+    assert_eq!(search("z", "abc"), None);
+    assert_eq!(search("a*", "bbb").as_deref(), Some(""));
+}
