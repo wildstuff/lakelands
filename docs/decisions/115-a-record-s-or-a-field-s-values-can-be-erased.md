@@ -1,8 +1,5 @@
 # 115 — A record's or a field's values can be erased from its history
 
-**Proposed** for 0.24.0 on lakelands#1736, 2026-11-07: the operator has
-not accepted it yet, and no build follows it.
-
 ## What is decided
 
 ### One act erases a record, a field of it, or a quarantined row
