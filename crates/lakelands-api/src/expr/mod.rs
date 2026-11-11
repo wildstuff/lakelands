@@ -90,9 +90,9 @@
 //! string; `extract(s, pattern)` answers the leftmost text the pattern
 //! matches, or null where it matches none, and reads `s` as `matches`
 //! does. Both are always evaluated by the store, never pushed down to an
-//! engine, so that every engine gives the same answer, and both take
-//! their pattern as a quoted literal, which the check refuses before any
-//! record runs.
+//! engine, so that every engine gives the same answer. `extract` takes
+//! its pattern as a quoted literal, which the check refuses before any
+//! record runs; `matches` still takes a computed one.
 //! Aggregates (`count`, `sum`, `min`, `max`, `avg`) appear only in view
 //! measures and in `find`'s aggregate, where a set of records is in
 //! scope.

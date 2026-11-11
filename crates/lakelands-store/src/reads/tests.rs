@@ -52,6 +52,7 @@ fn only_filters_an_engine_can_apply_alone_are_handed_down() {
         "rate = setting('vat_rate')",
         "known_at(amount) > due",
         "matches(number, 'INV-[0-9]+')",
+        "extract(number, 'INV-[0-9]+') = 'INV-1'",
         "not (matches(number, 'X') or amount > 1)",
     ] {
         assert!(needs_store(&parse(kept)), "`{kept}` was handed down");
