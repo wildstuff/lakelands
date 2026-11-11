@@ -842,6 +842,9 @@
    "code": "exists_here"
   },
   {
+   "code": "extract_takes_literal"
+  },
+  {
    "code": "preceding_here"
   },
   {

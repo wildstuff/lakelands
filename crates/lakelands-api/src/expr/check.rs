@@ -117,6 +117,17 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                 Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
                     return Err(Case::CallTakesQuoted { name });
                 }
+                // `extract`'s pattern is read here, so an unusable one is
+                // refused before any record runs.
+                Func::Extract => {
+                    let Some(pattern) = quoted(args.get(1)) else {
+                        return Err(Case::ExtractTakesLiteral);
+                    };
+                    super::iregexp::translate_search(pattern).map_err(|why| Case::NotIRegexp {
+                        pattern: pattern.clone(),
+                        why: Box::new(why),
+                    })?;
+                }
                 // A calendar unit, quoted, starts where the calendar says and
                 // takes no origin, but may name the zone, quoted, whose local
                 // calendar it is cut in; a width is a duration above zero,

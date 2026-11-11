@@ -517,6 +517,7 @@ What a refusal is about.
 | `division_by_zero` | — | division by zero | A division by zero. |
 | `in_empty` | — | an `in` lists one value at least | An `in` with an empty list. |
 | `exists_here` | — | exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at | An `exists` outside a verb's `requires` and set values. |
+| `extract_takes_literal` | — | extract() takes its pattern as a quoted text literal, which the check reads before any record runs | An `extract` whose pattern is no quoted text literal. |
 | `preceding_here` | — | preceding() has meaning in a type's constraint and in the `when` of a trigger on a type that is no view, over the record before it in its series | A `preceding` outside a constraint and a trigger's `when`, or over a view's rows. |
 | `in_force_here` | — | in_force() has meaning in a field computed at the read and in the `when` of a trigger on a type that is no view, over another type's record in force | An `in_force` outside a field computed at the read and a trigger's `when`, or over a view's rows. |
 | `in_set_here` | — | in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where` | An `in_set` left where no set's filter stands. |

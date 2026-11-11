@@ -48,6 +48,7 @@ mod embeddings;
 pub(in crate::conformance) mod erasable;
 mod erase;
 mod export;
+mod extract;
 mod feed;
 mod fields;
 mod filters;
@@ -450,6 +451,8 @@ pub const ALL: &[Check] = &[
     values::VECTOR_LENGTH,
     values::VALUE_TYPE_RULES,
     values::NULL_CLEARS_ANY_TYPE,
+    values::WRONG_KIND_SAYS_THE_KIND,
+    values::JSON_TAKES_GEO_NAMES,
     schema::SCHEMA_HASH_VECTOR,
     schema::SCHEMA_HASH_IGNORES_MEANING,
     schema::RESHAPING_DECLARE_REFUSED,
@@ -1332,4 +1335,5 @@ pub const ALL: &[Check] = &[
     metered::METERED_LEASE,
     window::WINDOW_AGGREGATE_JUDGES_A_LINKS_ENDS,
     window::WINDOW_PAST_ITS_BOUNDS,
+    extract::EXTRACT,
 ];

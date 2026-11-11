@@ -15,7 +15,7 @@ pub use super::fixture::{
 };
 pub use super::{Failure, Given, Held, Reopen, Store, backing};
 pub use crate::links::{link_key, link_type_name};
-pub use lakelands_api::error::{Case, Place, Printed, Said, Seam, Situation};
+pub use lakelands_api::error::{Case, Place, Printed, Said, Seam, Shape, Situation};
 pub use lakelands_api::event::{Event, EventBody};
 pub use lakelands_api::expr::Condition;
 pub use lakelands_api::location::Limits;

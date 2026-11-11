@@ -570,6 +570,8 @@ belongs in the suite, not beside one engine:
 - `a_vector_of_the_wrong_length_or_an_infinite_component_is_refused` — 011 and the log format §5: a vector field declares its dimensions, and a value of another length does not fit it, nor one with a component that is not finite as an `f32` (`1e300`); a vector of zeros fits; a vector derived from a `json` field, written or computed at the read, holding what no vector of the field is (`[1e300, 0, 0]`, `["a", "b", "c"]`, two numbers) holds no value
 - `a_value_types_one_of_format_and_scale_hold_on_every_write` — 011: a value's `one_of`, named `format` and decimal `scale` are the value type's, checked on every write; scale rounds half away from zero
 - `null_clears_a_field_whatever_its_value_type_allows` — 012 and 011: `null` in a patch clears the field; it is not a value the value type must allow
+- `a_value_of_the_wrong_kind_says_the_kind_its_field_takes` — 111: a wrong-kind write on every kind answers one case, names the field, and says the kind and the form; a right form with wrong content answers the kind's own case, never that one
+- `a_json_value_takes_every_form_and_a_geo_value_names_its_own_member` — 111: a `json` field takes every JSON form, and a `geo` field answers the case naming the member that is wrong, never `value_shape`
 - `a_decimal_written_as_a_json_number_is_refused` — the log format §5: a decimal's one JSON form is a string of digits, so a JSON number, which may already have lost digits, is refused
 - `a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused` — 011, extended, and the log format §5: a geo value is a GeoJSON geometry whose numbers take their one JSON form, the same through get and find, live and after a rebuild; empty `coordinates` are the empty geometry of every type alike, while an empty part inside one is refused; an open ring, a missing `type` or a GeoJSON object that is not a geometry is refused naming the field; null clears it
 - `a_json_value_reads_back_in_its_one_form_and_null_clears_it` — 011, extended, and the log format §5: a json value is kept as written but for its numbers, which take their one JSON form (`1`, never `1.0`), the same through get and find, live and after a rebuild; null clears it like any field
@@ -1824,6 +1826,10 @@ belongs in the suite, not beside one engine:
 
 - `an_aggregate_over_a_window_judges_a_links_ends_as_a_page_does` — 097 §As built, steps 3 and 4: a window's keys are answered by the engine, which holds no end, so an aggregate over a link type whose ends its reader does not hold reads the links as a page reads them, one record per key and the ends judged, and answers the same count and sum as a walk of every page; a count takes the page's road already
 - `a_read_past_its_window_ceiling_answers_as_one_inside_it` — 097 §Past the bounds: an aggregate over a window wider than `limits.window_keys` takes the other side and answers what the same read answers under a ceiling wide enough to hold the window; a key page over a window of more than `FEW_HOLDERS` rows takes the type and answers the page, and one within the ceiling answers the page; a count has no ceiling and answers the same under either; each answer is the count, the sum and the ten keys a walk of every page gives
+
+**extract**
+
+- `an_expression_extracts_the_text_a_pattern_matches` — 112 (lakelands#1696): `extract(s, p)` answers the leftmost text `p` matches in `s` and null where it matches none or `s` is null; among matches at that offset the first alternative wins and a greedy quantifier takes as much as it can; an empty match is the empty text; `s` is read as text, a number as its written form; a pattern that is no quoted literal is refused `extract_takes_literal` and one that is no I-Regexp `not_i_regexp`, both as the declaration is checked, and a read over a type that holds no records is refused `not_i_regexp`
 
 ### Through the engine seam
 

@@ -9,7 +9,7 @@ pub mod aggregate;
 #[doc(hidden)]
 pub mod eval;
 #[doc(hidden)]
-pub mod iregexp;
+pub use lakelands_api::expr::iregexp;
 #[doc(hidden)]
 pub mod order;
 #[doc(hidden)]

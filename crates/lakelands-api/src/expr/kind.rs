@@ -169,6 +169,8 @@ pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
                 Func::Contains | Func::StartsWith => Some(Boolean),
                 Func::InSet | Func::Exists => Some(Boolean),
                 Func::Matches => Some(Boolean),
+                // Text or null, and which one depends on the record.
+                Func::Extract => None,
                 Func::Lower | Func::Upper | Func::Trim | Func::Concat | Func::Substr => Some(Text),
                 Func::Replace => Some(Text),
                 Func::Len | Func::Count => Some(Number),

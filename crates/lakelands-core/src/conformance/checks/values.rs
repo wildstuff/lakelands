@@ -799,3 +799,288 @@ async fn a_computed_value_its_field_would_not_take_written_holds_no_value(store:
     }
     Ok(())
 }
+
+check!(
+    WRONG_KIND_SAYS_THE_KIND = a_value_of_the_wrong_kind_says_the_kind_its_field_takes,
+    "111: a wrong-kind write on every kind answers one case, names the field, and says the kind and the form; a right form with wrong content answers the kind's own case, never that one"
+);
+
+check!(
+    JSON_TAKES_GEO_NAMES = a_json_value_takes_every_form_and_a_geo_value_names_its_own_member,
+    "111: a `json` field takes every JSON form, and a `geo` field answers the case naming the member that is wrong, never `value_shape`"
+);
+
+/// Write `v` to the field `v` of the type `ty` and answer the case it was
+/// refused with, which must be said of that field and nowhere else.
+async fn refused_case(
+    store: &dyn LakeStore,
+    ty: &str,
+    v: Value,
+    why: &str,
+) -> Result<Said, Failure> {
+    let before = store.head().await.must("reading the head")?;
+    let what = format!("writing {v} ({why})");
+    let err = try_upsert(
+        doors(store).as_ref(),
+        &owner(store),
+        ty,
+        "k",
+        json!({ "v": v }),
+    )
+    .await
+    .must_fail(&what)?;
+    head_unmoved(store, before, &what).await?;
+    let Some(("v", Refusal::Constraint(said))) = refused_on(&err) else {
+        return Err(Failure::new(format!(
+            "{what} must be refused as a constraint on field `v`; it answered {err:?}"
+        )));
+    };
+    ensure!(
+        said.at.is_empty(),
+        "{what} must be said of the field and nowhere else; it says {said:?}"
+    );
+    Ok(said.as_ref().clone())
+}
+
+async fn a_value_of_the_wrong_kind_says_the_kind_its_field_takes(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("target", vec![])).await?;
+    let wrong = [
+        ("w_text", StorageKind::Text, Shape::Text, json!(1)),
+        ("w_reference", StorageKind::Reference, Shape::Text, json!(1)),
+        ("w_number", StorageKind::Number, Shape::Number, json!("1")),
+        (
+            "w_boolean",
+            StorageKind::Boolean,
+            Shape::Boolean,
+            json!("true"),
+        ),
+        ("w_decimal", StorageKind::Decimal, Shape::Digits, json!(1.5)),
+        (
+            "w_date_time",
+            StorageKind::DateTime,
+            Shape::DateTime,
+            json!(1),
+        ),
+        ("w_date", StorageKind::Date, Shape::Date, json!(1)),
+        ("w_bytes", StorageKind::Bytes, Shape::Base64, json!(1)),
+        (
+            "w_vector",
+            StorageKind::Vector,
+            Shape::Numbers,
+            json!([0.1, "x", 0.3]),
+        ),
+    ];
+    let mut red = Vec::new();
+    for (name, kind, shape, v) in wrong {
+        let ty = match kind {
+            StorageKind::Reference => FieldType {
+                target: Some("target".into()),
+                ..FieldType::kind(kind)
+            },
+            StorageKind::Vector => FieldType {
+                dimensions: Some(3),
+                ..FieldType::kind(kind)
+            },
+            _ => FieldType::kind(kind),
+        };
+        one_field(store.as_ref(), name, ty).await?;
+        let want = Case::ValueShape { kind, shape };
+        match refused_case(store.as_ref(), name, v, name).await {
+            Err(f) => red.push(f.to_string()),
+            Ok(said) if said.case != want => {
+                red.push(format!("`{name}` answered {:?}, not {want:?}", said.case));
+            }
+            Ok(said) if said.to_string() != want.to_string() => {
+                red.push(format!(
+                    "`{name}` said \"{said}\", not the case's \"{want}\""
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a wrong-kind value is refused `value_shape`, naming the kind and the form the field \
+         takes, on the field and nowhere else: {}",
+        red.join("; ")
+    );
+    let right = [
+        (
+            "w_digits",
+            FieldType::kind(StorageKind::Decimal),
+            json!("12,50"),
+            Case::NotDecimal {
+                value: "12,50".into(),
+            },
+        ),
+        (
+            "w_instant",
+            FieldType::kind(StorageKind::DateTime),
+            json!("2026-09-24T05:57:11"),
+            Case::NotDateTime {
+                value: "2026-09-24T05:57:11".into(),
+            },
+        ),
+        (
+            "w_day",
+            FieldType::kind(StorageKind::Date),
+            json!("2026-02-30"),
+            Case::NotDate {
+                value: "2026-02-30".into(),
+            },
+        ),
+        (
+            "w_base64",
+            FieldType::kind(StorageKind::Bytes),
+            json!("aGVsbG8"),
+            Case::NotBase64,
+        ),
+        (
+            "w_length",
+            FieldType {
+                dimensions: Some(3),
+                ..FieldType::kind(StorageKind::Vector)
+            },
+            json!([0.1, 0.2]),
+            Case::VectorLength {
+                found: 2,
+                expected: 3,
+            },
+        ),
+    ];
+    for (name, ty, v, want) in right {
+        one_field(store.as_ref(), name, ty).await?;
+        let said = refused_case(store.as_ref(), name, v, name).await?;
+        ensure!(
+            said.case == want,
+            "a value of the right form with wrong content answers the kind's own case: `{name}` \
+             must answer {want:?}; it said {:?}",
+            said.case
+        );
+    }
+    // A vector's length is the declaration's, so a vector field that
+    // declares none never reaches a write: it is refused at the declare,
+    // and `vector_no_dimensions` is not an answer a value meets.
+    let before = store.head().await.must("reading the head")?;
+    let v = FieldDecl {
+        ty: FieldType::kind(StorageKind::Vector),
+        ..field("v", StorageKind::Text)
+    };
+    let err = doors(store.as_ref())
+        .as_ref()
+        .declare(
+            &owner(store.as_ref()),
+            Declaration::Type(type_decl("w_plain_vector", vec![v])),
+        )
+        .await
+        .must_fail("declaring a vector field with no dimensions")?;
+    head_unmoved(store.as_ref(), before, "a refused vector declaration").await?;
+    let Some(said) = invalid_said(&err) else {
+        return Err(Failure::new(format!(
+            "declaring a vector field with no dimensions must be refused as invalid; it \
+             answered {err:?}"
+        )));
+    };
+    ensure!(
+        matches!(said.case, Case::VectorDimensions),
+        "declaring a vector field with no dimensions must answer `vector_dimensions`; it \
+         said {:?}",
+        said.case
+    );
+    one_field(
+        store.as_ref(),
+        "w_json_large",
+        FieldType::kind(StorageKind::Json),
+    )
+    .await?;
+    let said = refused_case(
+        store.as_ref(),
+        "w_json_large",
+        json!(1e16),
+        "an integer beyond ±(2^53 − 1)",
+    )
+    .await?;
+    ensure!(
+        matches!(said.case, Case::IntegerTooLarge { .. }),
+        "an integer beyond ±(2^53 − 1) in a `json` field must answer `integer_too_large`; it \
+         said {:?}",
+        said.case
+    );
+    Ok(())
+}
+
+async fn a_json_value_takes_every_form_and_a_geo_value_names_its_own_member(store: Store) -> Held {
+    let l = one_field(store.as_ref(), "w_json", FieldType::kind(StorageKind::Json)).await?;
+    for (i, v) in [
+        json!(1),
+        json!("a"),
+        json!(true),
+        json!([]),
+        json!({}),
+        json!(null),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let key = format!("k{i}");
+        if v.is_null() {
+            // `null` in a patch clears the field: give it a value first.
+            l.upsert("w_json", &key, json!({ "v": 0 })).await?;
+        }
+        l.upsert("w_json", &key, json!({ "v": v }))
+            .await
+            .map_err(|f| Failure::new(format!("a `json` field must take {v}: {f}")))?;
+    }
+    let geo = [
+        ("not an object", json!("POINT(7 50)"), Case::GeoNotObject),
+        ("no type", json!({}), Case::GeoNoType),
+        (
+            "an unknown type",
+            json!({ "type": "Square" }),
+            Case::GeoUnknownType {
+                name: "Square".into(),
+            },
+        ),
+        (
+            "a Point with no coordinates",
+            json!({ "type": "Point" }),
+            Case::GeoNoCoordinates {
+                geometry: "Point".into(),
+            },
+        ),
+        (
+            "a Point with malformed coordinates",
+            json!({ "type": "Point", "coordinates": [0.1] }),
+            Case::GeoCoordinates {
+                geometry: "Point".into(),
+            },
+        ),
+        (
+            "a GeometryCollection with no geometries array",
+            json!({ "type": "GeometryCollection" }),
+            Case::GeoNoGeometries,
+        ),
+    ];
+    let mut red = Vec::new();
+    for (i, (why, v, want)) in geo.into_iter().enumerate() {
+        let name = format!("w_geo_{i}");
+        one_field(store.as_ref(), &name, FieldType::kind(StorageKind::Geo)).await?;
+        match refused_case(store.as_ref(), &name, v, why).await {
+            Err(f) => red.push(f.to_string()),
+            Ok(said) if said.case != want => {
+                red.push(format!(
+                    "`{name}` ({why}) answered {:?}, not {want:?}",
+                    said.case
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a `geo` field answers the case naming the member that is wrong: {}",
+        red.join("; ")
+    );
+    Ok(())
+}

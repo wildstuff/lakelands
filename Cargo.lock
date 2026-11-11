@@ -1056,6 +1056,7 @@ dependencies = [
  "futures-core",
  "jiff",
  "jiff-tzdb",
+ "regex",
  "rust_decimal",
  "ryu",
  "serde",

@@ -1,32 +1,49 @@
 //! I-Regexp (RFC 9485), the interoperable regular-expression subset
-//! `matches()` takes.
+//! `matches()` and `extract()` take.
 //!
 //! A pattern is parsed by the RFC's grammar and refused if it steps
 //! outside it — no `\d`, `\w`, `\b`, flags, lazy quantifiers, anchors or
 //! back-references — and only then translated into the syntax of the
 //! `regex` crate: every literal escaped, `.` as any character but a line
-//! break (`\n`, `\r`), groups as non-capturing groups, and the whole
-//! pattern anchored at both ends, because an I-Regexp always matches the
-//! whole text. The translation is built from the parse, never spliced
-//! from the text, so no pattern can escape its anchors.
+//! break (`\n`, `\r`), groups as non-capturing groups. `matches()` is
+//! answered by the whole text, so its translation is anchored at both
+//! ends; `extract()` takes the leftmost text a pattern matches wherever
+//! it lies, so its translation is not. The translation is built from the
+//! parse, never spliced from the text, so no pattern can escape its
+//! anchors.
 
 use std::iter::Peekable;
 use std::str::Chars;
 
-use lakelands_api::error::Regexp;
+use crate::error::Regexp;
 
 /// Translate an I-Regexp into an anchored pattern for the `regex` crate,
 /// or say why it is not an I-Regexp.
 pub fn translate(pattern: &str) -> Result<String, Regexp> {
+    translated(pattern, true)
+}
+
+/// Translate an I-Regexp into a pattern for the `regex` crate that
+/// matches wherever the pattern occurs in the text, or say why it is not
+/// an I-Regexp.
+pub fn translate_search(pattern: &str) -> Result<String, Regexp> {
+    translated(pattern, false)
+}
+
+/// Parse `pattern` into a `regex` pattern, anchored at both ends where
+/// `whole`, left free to match anywhere where not.
+fn translated(pattern: &str, whole: bool) -> Result<String, Regexp> {
     let mut p = Parser {
         chars: pattern.chars().peekable(),
-        out: String::from("^(?:"),
+        out: if whole { "^(?:".into() } else { String::new() },
     };
     p.regexp()?;
     if let Some(c) = p.chars.next() {
         return Err(Regexp::Unmatched { c });
     }
-    p.out.push_str(")$");
+    if whole {
+        p.out.push_str(")$");
+    }
     Ok(p.out)
 }
 

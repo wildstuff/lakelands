@@ -87,8 +87,12 @@
 //! rest.
 //! `matches(s, pattern)` takes a pattern in I-Regexp (RFC 9485), the
 //! interoperable regular-expression subset, matched against the whole
-//! string; it is always evaluated by the store, never pushed down to an
-//! engine, so that every engine gives the same answer.
+//! string; `extract(s, pattern)` answers the leftmost text the pattern
+//! matches, or null where it matches none, and reads `s` as `matches`
+//! does. Both are always evaluated by the store, never pushed down to an
+//! engine, so that every engine gives the same answer, and both take
+//! their pattern as a quoted literal, which the check refuses before any
+//! record runs.
 //! Aggregates (`count`, `sum`, `min`, `max`, `avg`) appear only in view
 //! measures and in `find`'s aggregate, where a set of records is in
 //! scope.
@@ -116,6 +120,7 @@ use crate::id::FieldName;
 mod parse;
 
 mod check;
+pub mod iregexp;
 mod kept;
 pub mod kind;
 mod rewrite;
@@ -334,6 +339,10 @@ pub enum Func {
     /// `matches(s, pattern)`: an I-Regexp (RFC 9485) pattern matched
     /// against the whole text; evaluated in the store only.
     Matches,
+    /// `extract(s, pattern)`: the leftmost text `pattern` matches in `s`,
+    /// null where it matches none and null where `s` is null; evaluated in
+    /// the store only.
+    Extract,
     /// `abs(n)`.
     Abs,
     /// `round(n, digits)`.

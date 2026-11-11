@@ -901,6 +901,10 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             })
         }
         Func::Matches => Val::Bool(i_regexp(&s(1))?.is_match(&s(0))),
+        Func::Extract => match i_regexp_search(&s(1))?.find(&s(0)) {
+            Some(m) => Val::Text(m.as_str().to_owned()),
+            None => Val::Null,
+        },
         Func::Abs => Val::Num(number(&vals[0])?.abs()),
         Func::Floor => Val::Num(number(&vals[0])?.floor()),
         Func::DateBucket => match (as_time(&vals[0]), &vals[1]) {
@@ -973,12 +977,30 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
 /// An I-Regexp pattern (RFC 9485), matched against the whole text; see
 /// `iregexp` for what is refused and how it is translated.
 fn i_regexp(pattern: &str) -> Result<regex::Regex> {
+    compiled(pattern, super::iregexp::translate)
+}
+
+/// An I-Regexp pattern (RFC 9485), searched for wherever it lies in the
+/// text; see `iregexp` for what is refused and how it is translated.
+fn i_regexp_search(pattern: &str) -> Result<regex::Regex> {
+    compiled(pattern, super::iregexp::translate_search)
+}
+
+/// The pattern translated by `translate`, compiled. The translation is
+/// built either for the whole text or for a search, so the caller's
+/// choice decides what the pattern matches; a pattern that is no
+/// I-Regexp is refused by name, and one whose compiled form is too
+/// large by its limit.
+fn compiled(
+    pattern: &str,
+    translate: fn(&str) -> std::result::Result<String, lakelands_api::error::Regexp>,
+) -> Result<regex::Regex> {
     let p = || pattern.to_owned();
     let not = |why| Case::NotIRegexp {
         pattern: p(),
         why: Box::new(why),
     };
-    let translated = super::iregexp::translate(pattern).map_err(not)?;
+    let translated = translate(pattern).map_err(not)?;
     regex::Regex::new(&translated).map_err(|e| {
         let limit = match e {
             regex::Error::CompiledTooBig(limit) => Some(limit),

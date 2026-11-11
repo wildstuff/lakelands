@@ -454,7 +454,7 @@ indexes describe the head, and `ranked` reads them (below).
   evaluator. The store hands an engine only filters that need neither
   the clock, the lake's settings, per-field provenance, a pattern
   match nor a set's kept membership (`now`, `today`, `setting`,
-  `known_at`, `seen_at`, `matches`, `in_set`); it evaluates any other
+  `known_at`, `seen_at`, `matches`, `extract`, `in_set`); it evaluates any other
   filter itself. When the filter is, or has as
   one of its `and` terms, `field = 'text'` with a text that reads neither
   as a number nor as an instant
