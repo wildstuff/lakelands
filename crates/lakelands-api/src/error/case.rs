@@ -75,10 +75,9 @@ macro_rules! catalog {
             Unknown($crate::error::Unknown),
         }
 
-        // Serde's own `tag` reading buffers each variant's content into
-        // a private type before reading it, where the strict reader
-        // cannot see it. The tag is read here, and the case that it
-        // names is read member by member through the strict reader.
+        // Serde's `tag` reading buffers a variant's content where the
+        // strict reader cannot see it, so the tag is read here and the
+        // case is read member by member through the strict reader.
         impl<'de> ::serde::Deserialize<'de> for $set {
             fn deserialize<D>(d: D) -> ::std::result::Result<$set, D::Error>
             where
@@ -2308,6 +2307,8 @@ catalog! {
         IngestMediaType => "ingest takes application/x-ndjson",
         /// An ingest line that is not a record.
         LineNotRecord { line: usize, fault: JsonFault, column: usize } => "line {line} is not a record `ingest` takes: {fault}, at column {column}",
+        /// An ingest line refused for its form, which no column names: a line written as a sequence is one serde would have read.
+        LineNotRecordForm { line: usize, fault: JsonFault } => "line {line} is not a record `ingest` takes, and no column names it: {fault}",
         /// An ingest line over the length one may have.
         LineTooLong { line: usize, max: usize } => "line {line} is longer than {max} bytes",
         /// A member the arguments need and do not give.

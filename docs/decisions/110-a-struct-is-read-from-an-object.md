@@ -103,9 +103,15 @@ must first materialise the value to look at it — which is the `Reader`
 over a `Value`. Every door already holds or can read one, and a text
 that does not parse keeps the line and column its parse gives it.
 
-For the bundle loader this is also fewer parses: the document holds the
-value it read, `name` reads it, and `to` reads it through `strict`, so
-the text is parsed once instead of three times.
+For the bundle loader this costs one parse more. The document keeps the
+text it was given and the value it read, `name` reads the value, and `to`
+reads the value through `strict` for the verdict — a sequence is refused
+with this record's sentence — and then reads the text again, because the
+value `strict` saw has its maps sorted and the loader keeps the order an
+author wrote a field in. So the text is parsed three times where the
+loader parsed it twice before: twice in `read`, once in `to`. The extra
+parse buys the order a document is read in, which the loader's tests
+hold; handing back `strict`'s value instead would lose it.
 
 ### The refusal names the form that is expected
 
@@ -127,7 +133,11 @@ as it is today, through `serde_path_to_error`.
 A refusal of form carries a path, not a line and column: those belong to
 a text that does not parse, and they stay there. Where a door names only
 a line — the ingest, which has no member path to add — the line says
-where.
+where, and the refusal says that no column does: `line_not_record_form`,
+a case beside `line_not_record` and not a change to it, because that
+case's column is required and names where a line that did not parse
+stopped. A line refused for its form is one serde would have read, and
+serde reports no column for a text it takes.
 
 A declaration's refusal is its own. `Declaration` is hand-read and asks
 a `serde_json::Map` today (`crates/lakelands-api/src/write.rs`), so
@@ -165,8 +175,11 @@ the variant beneath the array.
 
 ### The rows
 
-A row is the door refusing the positional form, with the same value in
-its object form still reading:
+A row is the contract's reader refusing the positional form —
+`strict::from_value`, which is where the rule lives, and which a
+conformance row can reach from the contract crate — with the same value
+in its object form still reading. Each door's own test stands beside the
+rows and drives the same value through the door:
 
 - a request struct: `find` with `{"aggregate": {"measures": [["n",
   "count"]]}}` is refused naming `name` and `func` at
@@ -221,6 +234,13 @@ host that writes a positional form today is refused once the
 implementation lands. It is decided here, before a host documents the
 form and not discovered in the code that refuses it, and delivered with
 the implementation.
+
+It therefore ships in a minor release and not a patch: a host that sends
+a form the lake took is now refused, which is a change a host must act
+on, and decision 068 holds that a behaviour a host must act on is minor.
+No signature changes, so the host-surface checks cannot see it; decision
+056's "Changes a host must make" is where a host reads it, and the
+release notes carry the line.
 
 ## What it is not
 

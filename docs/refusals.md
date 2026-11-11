@@ -921,6 +921,7 @@ What a refusal is about.
 | `if_none_match_value` | `value` (String) | `If-None-Match: {value}` is not taken | An `If-None-Match` other than `*`. |
 | `ingest_media_type` | — | ingest takes application/x-ndjson | An ingest body of another media type than NDJSON. |
 | `line_not_record` | `line` (usize), `fault` (JsonFault), `column` (usize) | line {line} is not a record `ingest` takes: {fault}, at column {column} | An ingest line that is not a record. |
+| `line_not_record_form` | `line` (usize), `fault` (JsonFault) | line {line} is not a record `ingest` takes, and no column names it: {fault} | An ingest line refused for its form, which no column names: a line written as a sequence is one serde would have read. |
 | `line_too_long` | `line` (usize), `max` (usize) | line {line} is longer than {max} bytes | An ingest line over the length one may have. |
 | `member_missing` | `member` (String) | the member `{member}` is missing | A member the arguments need and do not give. |
 | `mode_needs_member` | `mode` (String), `member` (String) | the `{mode}` mode needs the member `{member}`, and it is missing | A member the arguments' mode needs and they do not give. |

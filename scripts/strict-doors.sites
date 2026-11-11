@@ -7,6 +7,7 @@ crates/lakelands-server/src/http.rs read_json serde_json::from_slice	value
 crates/lakelands-server/src/rest.rs order serde_json::from_str	value
 crates/lakelands-server/src/rest.rs query_args serde_json::from_str	value
 crates/lakelands-server/src/rest.rs poll_next serde_json::from_slice	value
+crates/lakelands-server/src/rest.rs poll_next serde_json::from_slice	value
 crates/lakelands-server/src/session.rs door serde_json::from_value	value
 crates/lakelands-server/src/stdio.rs serve_io serde_json::from_str	value
 crates/lakelands-client/src/doors.rs line serde_json::from_slice	value

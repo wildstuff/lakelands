@@ -1059,13 +1059,29 @@ impl Stream for Lines {
                 return match serde_json::from_slice::<Value>(&text) {
                     Ok(v) => match lakelands_api::strict::from_value::<SourceRecord>(v) {
                         Ok(r) => Poll::Ready(Some(r)),
-                        // A form refusal names the line alone: a parsed
-                        // line has no column to give, and it starts at one.
-                        Err(e) => this.stop(Case::LineNotRecord {
-                            line: this.line,
-                            fault: e.inner().into(),
-                            column: 1,
-                        }),
+                        Err(e) => {
+                            // The second read names the member a fault is
+                            // at: it reads the line as the text it is,
+                            // and serde's column is where the line puts
+                            // it. A line refused for its form is one
+                            // serde would have read, so it has no column
+                            // to give, and its sentence says so
+                            // (`docs/decisions/110-a-struct-is-read-from-an-object.md`).
+                            let column = serde_json::from_slice::<SourceRecord>(&text)
+                                .err()
+                                .map(|second| second.column());
+                            match column {
+                                Some(column) => this.stop(Case::LineNotRecord {
+                                    line: this.line,
+                                    fault: e.inner().into(),
+                                    column,
+                                }),
+                                None => this.stop(Case::LineNotRecordForm {
+                                    line: this.line,
+                                    fault: e.inner().into(),
+                                }),
+                            }
+                        }
                     },
                     Err(e) => {
                         let (line, fault, column) = (this.line, (&e).into(), e.column());
