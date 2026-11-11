@@ -508,6 +508,7 @@ fn given_of(reopen: Reopen, relimit: Relimit) -> Given {
         large_lake: h.large_lake(),
         harness: h.name().to_owned(),
         import: h.importer(),
+        import_through: h.importer_through(),
         continued: h.continuer(),
         twin: h.twinner(),
         fault: h.faulter(),

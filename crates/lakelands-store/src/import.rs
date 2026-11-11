@@ -56,6 +56,15 @@
 //! it, and may seal a segment past its bound
 //! (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
 //!
+//! **A restore may stop at a position.** Given one, the import reads the
+//! prefix of the export through it and no more: the files that start at or
+//! before it, the last read through the append that ends there, so every
+//! read of the directory (verification, the scan, the carry) is bounded
+//! alike and a fault past the position is never met. The lake's head is the
+//! position; a position inside an append or past the head is refused by
+//! the verification before anything is written
+//! (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
+//!
 //! **A failure is loud.** Once the first event is written, what can still
 //! fail is the target's storage. The error names the position the import
 //! reached and the file it was reading; the lake then holds a true prefix
@@ -239,7 +248,14 @@ type Read = (CanonicalEvent, Envelope, Position);
 /// envelope and the last position of its append, its own where it is
 /// alone on its line, in order. A file that ends inside an append is
 /// refused.
-fn events(path: &Path) -> Result<impl Iterator<Item = Result<Read>> + '_> {
+///
+/// With `through`, the iterator ends after the event at that position,
+/// whatever the file holds past it (077 § A restore may stop at a
+/// position): a fault past the position is never read.
+fn events(
+    path: &Path,
+    through: Option<Position>,
+) -> Result<impl Iterator<Item = Result<Read>> + '_> {
     let file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
     let mut events = lakelands_core::log::Restoring::new(BufReader::new(file), true);
     let mut done = false;
@@ -281,6 +297,7 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<Read>> + '_> {
             bytes: read.bytes,
             frame: None,
         };
+        done = through == Some(e.position);
         Some(Ok((stored, e, read.end)))
     }))
 }
@@ -299,8 +316,9 @@ fn check(
     files: &[PathBuf],
     lake: &LakeId,
     keys: Option<&dyn lakelands_api::seam::KeyStore>,
+    through: Option<Position>,
 ) -> Result<Vec<Digest>> {
-    let (digests, needed) = scan(files, lake)?;
+    let (digests, needed) = scan(files, lake, through)?;
     for (source, key) in needed {
         let Some(keys) = keys else {
             return Err(Error::unbound(lakelands_api::error::Seam::KeyStore));
@@ -314,14 +332,20 @@ fn check(
 
 /// Every event in the export in `dir` checked as an import checks it, for
 /// `lake`, without a key store: what `restore --check` runs after `verify`.
-pub fn check_events(dir: &Path, lake: &LakeId) -> Result<()> {
-    scan(&lakelands_core::export::segment_files(dir)?, lake).map(drop)
+/// Through `through` where it is given, and no further.
+pub fn check_events(dir: &Path, lake: &LakeId, through: Option<Position>) -> Result<()> {
+    let files = lakelands_core::export::prefix_files(dir, through)?;
+    scan(&files, lake, through).map(drop)
 }
 
 type Needed = BTreeSet<(SourceId, lakelands_api::id::KeyId)>;
 
 /// Each file's digest, and the keys the export's sealed values need.
-fn scan(files: &[PathBuf], lake: &LakeId) -> Result<(Vec<Digest>, Needed)> {
+fn scan(
+    files: &[PathBuf],
+    lake: &LakeId,
+    through: Option<Position>,
+) -> Result<(Vec<Digest>, Needed)> {
     let (mut sealed, mut forgot, mut shredded) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut fence = 0;
@@ -330,7 +354,7 @@ fn scan(files: &[PathBuf], lake: &LakeId) -> Result<(Vec<Digest>, Needed)> {
         // Over the events it restores, as an engine digests a segment
         // (§4.2), hashed as they are read, so a segment is never held whole.
         let mut hasher = Sha256::new();
-        for event in events(path)? {
+        for event in events(path, through)? {
             let (stored, event, _) = event?;
             hasher.update(&stored.bytes);
             hasher.update(b"\n");
@@ -396,11 +420,18 @@ fn scan(files: &[PathBuf], lake: &LakeId) -> Result<(Vec<Digest>, Needed)> {
     Ok((digests, needed))
 }
 
-/// Import the export in `dir` as a new lake at `location` (module doc).
-pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported> {
-    let verified = lakelands_core::export::verify(dir)?;
-    let files = lakelands_core::export::segment_files(dir)?;
-    let digests = check(&files, &location.lake, seams.keys.as_deref())?;
+/// Import the export in `dir` as a new lake at `location` (module doc),
+/// through `through` where it is given: the lake's head is then that
+/// position, and nothing past it is read.
+pub fn import(
+    location: &Location,
+    seams: Seams,
+    dir: &Path,
+    through: Option<Position>,
+) -> Result<Imported> {
+    let verified = lakelands_core::export::verify_through(dir, through)?;
+    let files = lakelands_core::export::prefix_files(dir, through)?;
+    let digests = check(&files, &location.lake, seams.keys.as_deref(), through)?;
     let opener = crate::lake::opener(location, &seams)?;
     if let Some(ends) = opener.log_ends(location)? {
         crate::log::one_format(&location.lake, Some(&ends))?;
@@ -420,7 +451,7 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
             let lake = Box::new(location.lake.clone());
             return Err(precondition(Case::ImportNotEmpty { lake, head }));
         }
-        carry(engine.as_ref(), &lease, &files, &digests, location)?;
+        carry(engine.as_ref(), &lease, &files, &digests, location, through)?;
         let mut lake = Lake::assemble(location, seams.clone(), engine.clone(), Some(lease.clone()));
         let lake = lake.turn();
         lake.catch_up().map_err(|e| {
@@ -455,6 +486,7 @@ fn carry(
     files: &[PathBuf],
     digests: &[Digest],
     location: &Location,
+    through: Option<Position>,
 ) -> Result<()> {
     let mut reached = Position::GENESIS;
     let stopped = |_: &Path, reached: Position, e: Error| {
@@ -489,7 +521,7 @@ fn carry(
                 .map(drop)
                 .ok_or_else(|| lakelands_core::damaged(Part::Log, None, Flaw::NothingToSeal))
         };
-        let read = events(path)?.map(|event| event.map(|(event, _, end)| (event, end)));
+        let read = events(path, through)?.map(|event| event.map(|(event, _, end)| (event, end)));
         batched(appends(read), BATCH, &mut |batch| {
             hand(batch).map_err(|e| stopped(path, reached, e))?;
             reached = batch.last().expect("not empty").position.next();

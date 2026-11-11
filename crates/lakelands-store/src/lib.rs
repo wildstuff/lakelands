@@ -50,7 +50,8 @@ pub mod writes;
 
 pub use backing::ExprBacking;
 pub use doors::{
-    REACH_POLL, Standing, build_ahead, discard_ahead, import, open, room_ahead, standby,
+    REACH_POLL, Standing, build_ahead, discard_ahead, import, import_through, open, room_ahead,
+    standby,
 };
 pub use import::{Imported, check_events};
 #[doc(hidden)]

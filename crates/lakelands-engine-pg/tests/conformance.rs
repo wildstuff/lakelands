@@ -16,8 +16,8 @@ use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::Check;
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, Lower,
-    Meter, Relimit, Reopen, Standby, Twin, below, continue_below, run_checks, run_one,
+    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, ImportThrough, ImportedLake,
+    Lower, Meter, Relimit, Reopen, Standby, Twin, below, continue_below, run_checks, run_one,
 };
 use lakelands_engine_pg::PgOpener;
 use peak_alloc::PeakAlloc;
@@ -168,9 +168,9 @@ impl Harness for Pg {
         })
     }
 
-    fn importer(&self) -> Import {
+    fn importer_through(&self) -> ImportThrough {
         let url = self.url.clone();
-        Arc::new(move |from, lake, into, host| {
+        Arc::new(move |from, lake, into, host, through| {
             let url = url.clone();
             Box::pin(async move {
                 // Into a lake handed out already, in its schema; a
@@ -187,7 +187,8 @@ impl Harness for Pg {
                     engines: vec![Arc::new(PgOpener)],
                     ..host
                 };
-                lakelands_store::import(location.clone(), seams.clone(), from).await?;
+                lakelands_store::import_through(location.clone(), seams.clone(), from, through)
+                    .await?;
                 let store = lakelands_store::open(location.clone(), seams, OpenMode::Read).await?;
                 let at = location.clone();
                 let writer: Reopen = Arc::new(move |store, host| {

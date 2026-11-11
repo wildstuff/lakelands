@@ -180,7 +180,15 @@ pub trait Harness: Send + Sync {
     /// a lake of its engine: the [`Import`] a check of the import is
     /// given. A harness that imports nothing answers `unbound`.
     fn importer(&self) -> Import {
-        Arc::new(|_, _, _, _| {
+        let through = self.importer_through();
+        Arc::new(move |dir, lake, into, seams| through(dir, lake, into, seams, None))
+    }
+
+    /// [`Harness::importer`] stopping at a position (`restore --through`):
+    /// the [`ImportThrough`] a check of a restore to a position is given.
+    /// A harness that imports nothing answers `unbound`.
+    fn importer_through(&self) -> ImportThrough {
+        Arc::new(|_, _, _, _, _| {
             Box::pin(async {
                 let op = "import".to_owned();
                 let seam = lakelands_api::error::Seam::Operation { op };
@@ -316,6 +324,8 @@ pub struct Given {
     pub harness: String,
     /// How the harness imports an export as a lake of its engine.
     pub import: Import,
+    /// How the harness imports an export through a position.
+    pub import_through: ImportThrough,
     /// How the harness writes to a lake's log below the store and opens
     /// the lake again.
     pub continued: Continue,
@@ -419,6 +429,19 @@ pub type Twin = Arc<dyn Fn(lakelands_api::LakeId, Seams) -> FreshLake<'static> +
 /// holds events).
 pub type Import = Arc<
     dyn Fn(PathBuf, lakelands_api::LakeId, Option<Arc<dyn LakeStore>>, Seams) -> ImportFuture
+        + Send
+        + Sync,
+>;
+
+/// [`Import`], the log through a position only where one is given.
+pub type ImportThrough = Arc<
+    dyn Fn(
+            PathBuf,
+            lakelands_api::LakeId,
+            Option<Arc<dyn LakeStore>>,
+            Seams,
+            Option<lakelands_api::Position>,
+        ) -> ImportFuture
         + Send
         + Sync,
 >;
@@ -770,6 +793,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         large_lake: harness.large_lake(),
         harness: harness.name().to_owned(),
         import: harness.importer(),
+        import_through: harness.importer_through(),
         continued: harness.continuer(),
         twin: harness.twinner(),
         fault: harness.faulter(),

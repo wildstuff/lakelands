@@ -1408,6 +1408,7 @@ pub async fn import(
     seams: lakelands_api::seam::Seams,
     dir: &Path,
     restoring: bool,
+    through: Option<lakelands_api::Position>,
 ) -> Result<Result<(), Failure>, Failure> {
     if location.engine == lakelands_api::EngineConfig::Memory {
         return Err(Failure::new(
@@ -1418,7 +1419,7 @@ pub async fn import(
             "import into a lake kept on disk: SQLite (`lakelands lake new <id>`), or PostgreSQL",
         ));
     }
-    let imported = lakelands_store::import(location, seams, dir.to_owned())
+    let imported = lakelands_store::import_through(location, seams, dir.to_owned(), through)
         .await
         .map_err(|e| {
             // An archive of another release's log format is the operator's
@@ -1443,6 +1444,18 @@ pub async fn import(
                 return Failure::new(said, todo);
             }
             let todo = match &e {
+                lakelands_api::Error::Refused {
+                    reason: lakelands_api::error::Refusal::Precondition(said),
+                    ..
+                } if matches!(
+                    said.case,
+                    lakelands_api::error::Case::RestoreInsideAppend { .. }
+                        | lakelands_api::error::Case::RestorePastHead { .. }
+                ) =>
+                {
+                    "restore again with --through a position the message names; the backup is \
+                     unchanged and nothing was written"
+                }
                 lakelands_api::Error::Refused { .. } => {
                     "an export opens only as the lake it came from, into a lake that holds \
                      nothing: write that lake's location (`lakelands lake new <id>`, or by hand \

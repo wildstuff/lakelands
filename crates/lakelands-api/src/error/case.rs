@@ -2167,6 +2167,10 @@ catalog! {
         ImportNotEmpty { lake: Box<LakeId>, head: Position } => "the lake `{lake}` already holds events through position {head}; an import makes a new lake and goes only into one that holds nothing",
         /// An export holding another lake's events.
         ImportOtherLake { position: Position, held: Box<LakeId>, lake: Box<LakeId> } => "the export's directory holds at position {position} an event of the lake `{held}`, and the import makes `{lake}`; a lake's name is inside every hash, so an export opens only as the lake it came from; nothing was imported",
+        /// A restore to a position inside an append.
+        RestoreInsideAppend { position: Position, end: Position } => "position {position} is inside an append that ends at position {end}; a restore stops at the end of an append, so name {end}",
+        /// A restore to a position past the directory's head.
+        RestorePastHead { position: Position, head: Position } => "position {position} is past the head of the directory, position {head}; name a position through {head}",
         /// A lake's storage that holds another lake: a PostgreSQL schema, or a directory.
         LakeOther { schema: Option<String>, held: String, lake: Box<LakeId> } => "[the schema `{schema}`|the lake's directory] holds the lake `{held}`, not `{lake}`",
         /// A PostgreSQL location's URL that names no user.

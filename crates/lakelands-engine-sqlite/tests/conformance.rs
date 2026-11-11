@@ -14,7 +14,7 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake,
+    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, ImportThrough, ImportedLake,
     LARGE_LAKE, Lower, Meter, Relimit, Reopen, Standby, Twin, below, continue_below, run_all,
     run_one,
 };
@@ -171,10 +171,10 @@ impl Harness for Sqlite {
         })
     }
 
-    fn importer(&self) -> Import {
+    fn importer_through(&self) -> ImportThrough {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let root = self.root.clone();
-        Arc::new(move |from, lake, into, host| {
+        Arc::new(move |from, lake, into, host, through| {
             let root = root.clone();
             Box::pin(async move {
                 // Into a lake handed out already, in its directory; a
@@ -191,7 +191,8 @@ impl Harness for Sqlite {
                     engines: vec![Arc::new(SqliteOpener)],
                     ..host
                 };
-                lakelands_store::import(location.clone(), seams.clone(), from).await?;
+                lakelands_store::import_through(location.clone(), seams.clone(), from, through)
+                    .await?;
                 let store = lakelands_store::open(location.clone(), seams, OpenMode::Read).await?;
                 let at = location.clone();
                 let writer: Reopen = Arc::new(move |store, host| {

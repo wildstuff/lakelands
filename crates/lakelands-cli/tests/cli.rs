@@ -2253,6 +2253,25 @@ fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
         "{}",
         check.out
     );
+    // `--through` stops the check at a position, and a position past the
+    // head is refused naming the head.
+    let upto = from.run(&["restore", &dir, "--check", "--through", &head.to_string()]);
+    assert_eq!(upto.code, 0, "{}", upto.err);
+    assert!(
+        upto.out.contains(&format!("through {head}")),
+        "{}",
+        upto.out
+    );
+    let past = (now + 1).to_string();
+    let beyond = from.run(&["restore", &dir, "--check", "--through", &past]);
+    assert!(
+        beyond.code != 0
+            && beyond
+                .err
+                .contains(&format!("past the head of the directory, position {now}")),
+        "{}",
+        beyond.err
+    );
     // A backup whose last event's `id` is upper-case hex, its hash made
     // right, chains; `restore --check` refuses it at that position, as a
     // restore does.
