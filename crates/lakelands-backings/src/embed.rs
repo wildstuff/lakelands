@@ -220,8 +220,10 @@ impl Embed {
                 other => self.failed(other.exchange()),
             })?;
         // The reply's text is never quoted: it may echo the input.
-        let reply: Reply = serde_json::from_slice(&reply)
-            .map_err(|_| self.failed(Exchange::NotTheContract { status: None }))?;
+        let reply: Reply = serde_json::from_slice::<serde_json::Value>(&reply)
+            .ok()
+            .and_then(|v| lakelands_api::strict::from_value(v).ok())
+            .ok_or_else(|| self.failed(Exchange::NotTheContract { status: None }))?;
         let want = self.config.dimensions as usize;
         let mut out: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
         if reply.data.len() != texts.len() {

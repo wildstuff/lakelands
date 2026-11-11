@@ -1056,8 +1056,17 @@ impl Stream for Lines {
                 if text.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
-                return match serde_json::from_slice::<SourceRecord>(&text) {
-                    Ok(r) => Poll::Ready(Some(r)),
+                return match serde_json::from_slice::<Value>(&text) {
+                    Ok(v) => match lakelands_api::strict::from_value::<SourceRecord>(v) {
+                        Ok(r) => Poll::Ready(Some(r)),
+                        // A form refusal names the line alone: a parsed
+                        // line has no column to give, and it starts at one.
+                        Err(e) => this.stop(Case::LineNotRecord {
+                            line: this.line,
+                            fault: e.inner().into(),
+                            column: 1,
+                        }),
+                    },
                     Err(e) => {
                         let (line, fault, column) = (this.line, (&e).into(), e.column());
                         this.stop(Case::LineNotRecord {

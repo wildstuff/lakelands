@@ -1459,8 +1459,10 @@ impl Risk {
     }
 }
 
+crate::tagged_enum! {
+    tag = "effect", names = "snake_case", permit;
 /// What a verb does when it runs.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "effect", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum VerbEffect {
@@ -1480,6 +1482,7 @@ pub enum VerbEffect {
     /// Retires the record it is called on, as `retire` does; on a type
     /// retired by its verbs, the only door that does (lakelands#1148).
     Retire,
+}
 }
 
 impl VerbEffect {

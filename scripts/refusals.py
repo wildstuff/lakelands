@@ -104,7 +104,11 @@ ENTRY = re.compile(
 )
 
 
-NAMED_ENTRY = re.compile(r"((?:[ \t]*///[^\n]*\n)*)[ \t]*([A-Z]\w*)\s*=\s*\"(\w+)\"\s*=>\s*\"((?:[^\"\\\\]|\\\\.)*)\",")
+NAMED_ENTRY = re.compile(
+    r"((?:[ \t]*///[^\n]*\n)*)[ \t]*([A-Z]\w*)\s*"
+    r"(?:\{\s*((?:\w+\s*:\s*[\w:<>]+)(?:\s*,\s*\w+\s*:\s*[\w:<>]+)*)?\s*\})?\s*"
+    r"=\s*\"(\w+)\"\s*=>\s*\"((?:[^\"\\\\]|\\\\.)*)\","
+)
 # A plain-name set's sentences, by its name: what a parameter of it says.
 NAMED = {}
 
@@ -141,7 +145,25 @@ def catalog():
             cases = []
             for e in NAMED_ENTRY.finditer(body[head.end() :]):
                 cdoc = " ".join(l.strip()[3:].strip() for l in e.group(1).splitlines() if l.strip())
-                cases.append((e.group(3), [], e.group(4).replace('\\"', '"'), cdoc))
+                params = [
+                    (name, ty)
+                    for name, ty in re.findall(
+                        r"(\w+)\s*:\s*([\w:<>]+(?:<[\w:<>]+>)?)", e.group(3) or ""
+                    )
+                ]
+                template = e.group(5).replace('\\"', '"').replace("{{", "\0").replace("}}", "\1")
+                said = set(re.findall(r"\{\??(\w+)\}", template))
+                if said != {name for name, _ in params}:
+                    UNNAMED.append(
+                        f"{head.group(2)}::{e.group(2)} names {sorted(said)} and has "
+                        f"{sorted(n for n, _ in params)}"
+                    )
+                for name, ty in params:
+                    mark = name + "!t:" + ty + "}"
+                    template = template.replace("{" + name + "}", "{" + mark)
+                    template = template.replace("{?" + name + "}", "{?" + mark)
+                template = template.replace("\0", "{{").replace("\1", "}}")
+                cases.append((e.group(4), params, template, cdoc))
             NAMED[head.group(2)] = [t for _, _, t, _ in cases]
             sets.append((head.group(2), doc, cases))
     for path in sorted(ERRORS.rglob("*.rs")):

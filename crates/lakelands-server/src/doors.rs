@@ -55,10 +55,14 @@ impl Fault {
 /// `declarations[2]`, and inside a declaration where in it.
 pub(crate) fn args<T: DeserializeOwned>(door: &str, a: &Map<String, Value>) -> Result<T, Fault> {
     let v = Value::Object(a.clone());
-    serde_path_to_error::deserialize(v.clone()).map_err(|e| {
+    lakelands_api::strict::read(v.clone()).map_err(|e| {
         let at = path(&e);
-        let mut said = misfit::<T>(v.clone());
+        // A positional refusal says all there is to say: the value's
+        // members are not named. No second reading improves on it.
+        let positional = matches!(e.inner(), lakelands_api::strict::Fault::Positional { .. });
+        let mut said = if positional { None } else { misfit::<T>(v.clone()) };
         if said.is_none()
+            && !positional
             && let Some((within, inner)) =
                 located(&v, &e).and_then(|d| in_declaration(d, String::new()))
         {
@@ -97,7 +101,7 @@ fn needed_by_mode(v: &Value) -> Said {
 }
 
 /// Where a read failed, as its path says it; `None` at the root.
-fn path(e: &serde_path_to_error::Error<serde_json::Error>) -> Option<String> {
+fn path(e: &serde_path_to_error::Error<lakelands_api::strict::Fault>) -> Option<String> {
     let path = e.path().to_string();
     (path != ".").then_some(path)
 }
@@ -124,7 +128,7 @@ fn misfit<T: DeserializeOwned>(v: Value) -> Option<(Option<String>, Said)> {
 /// The value at the place a read failed.
 fn located<'v>(
     v: &'v Value,
-    e: &serde_path_to_error::Error<serde_json::Error>,
+    e: &serde_path_to_error::Error<lakelands_api::strict::Fault>,
 ) -> Option<&'v Value> {
     use serde_path_to_error::Segment;
     e.path().iter().try_fold(v, |v, s| match s {
@@ -165,7 +169,7 @@ fn in_declaration(v: &Value, at: String) -> Option<(String, Said)> {
 /// Why the members of a declaration of `kind` do not read, if they do not.
 fn declared(kind: &str, members: Value) -> Option<(Naming, Said)> {
     fn one<T: DeserializeOwned>(v: Value) -> Option<Said> {
-        let e = serde_path_to_error::deserialize::<_, T>(v.clone()).err()?;
+        let e = lakelands_api::strict::read::<T>(v.clone()).err()?;
         let (at, said) = misfit::<T>(v).unwrap_or_else(|| {
             let fault = e.inner().into();
             (path(&e), Case::ArgumentsUnfit { fault }.into())
@@ -441,7 +445,7 @@ fn said(answer: &mut Value) {
             .iter_mut()
             .filter(|p| p["write"].get("plan").is_some())
         {
-            let plan = serde_json::from_value(p["write"]["plan"].clone());
+            let plan = lakelands_api::strict::from_value(p["write"]["plan"].clone());
             if let Ok(plan) = plan {
                 p["said"] = Value::from(crate::say::plan(&plan));
             }
@@ -458,7 +462,9 @@ fn said(answer: &mut Value) {
         }
         None => return,
     };
-    if let Ok(plan) = serde_json::from_value::<lakelands_api::write::Plan>(plan.clone()) {
+    if let Ok(plan) =
+        lakelands_api::strict::from_value::<lakelands_api::write::Plan>(plan.clone())
+    {
         answer["said"] = Value::from(crate::say::plan(&plan));
     }
 }

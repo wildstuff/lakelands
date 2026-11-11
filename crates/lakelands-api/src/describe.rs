@@ -488,52 +488,58 @@ pub enum SeriesToldState {
     Kept,
 }
 
-/// Whether a view's records are kept as its sources are written, or
-/// computed at each read.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum Kept {
-    /// The view's records are kept and answer its reads.
-    Kept,
-    /// The view is computed at each read.
-    Computed {
-        /// Why it is not kept.
-        why: NotKept,
-    },
+crate::tagged_enum! {
+    tag = "state", names = "snake_case", permit;
+    /// Whether a view's records are kept as its sources are written, or
+    /// computed at each read.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(tag = "state", rename_all = "snake_case")]
+    pub enum Kept {
+        /// The view's records are kept and answer its reads.
+        Kept,
+        /// The view is computed at each read.
+        Computed {
+            /// Why it is not kept.
+            why: NotKept,
+        },
+    }
 }
 
-/// Why a view is computed at each read.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "because", rename_all = "snake_case")]
-pub enum NotKept {
-    /// No `view_kept.<type>` setting holds.
-    NotAsked,
-    /// The view cannot be kept.
-    CannotBeKept {
-        /// Which measure, which call and why: the case the setting's
-        /// refusal says. It names what the view reads, so it is given to
-        /// a principal who is shown the view as declared, and to no other.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<Box<crate::error::Said>>,
-    },
-    /// Its records are not whole.
-    NotWhole {
-        /// The groups whose kept record is not exact, for this reader: a
-        /// measure fails over the group, or a member's argument does not
-        /// fold, which mends when its cause leaves.
-        not_exact: u64,
-    },
-    /// Its records are being built: a `view_kept.<view>` setting is in
-    /// force, and the build has not reached its `Keep`, so reads compute
-    /// it. A build a runner left owed goes on at the next open.
-    Building,
-    /// Its records are not kept at this position, or by this lake.
-    NotKeptHere,
-    /// Its reader is admitted only some records of the view, or of a type
-    /// it reads: its records are computed from those alone. A read may
-    /// still be served from kept records where the groups carry the
-    /// grant's fields; that is a speed, not something this promises.
-    OnlySome,
+crate::tagged_enum! {
+    tag = "because", names = "snake_case", permit;
+    /// Why a view is computed at each read.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(tag = "because", rename_all = "snake_case")]
+    pub enum NotKept {
+        /// No `view_kept.<type>` setting holds.
+        NotAsked,
+        /// The view cannot be kept.
+        CannotBeKept {
+            /// Which measure, which call and why: the case the setting's
+            /// refusal says. It names what the view reads, so it is given to
+            /// a principal who is shown the view as declared, and to no other.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            reason: Option<Box<crate::error::Said>>,
+        },
+        /// Its records are not whole.
+        NotWhole {
+            /// The groups whose kept record is not exact, for this reader: a
+            /// measure fails over the group, or a member's argument does not
+            /// fold, which mends when its cause leaves.
+            not_exact: u64,
+        },
+        /// Its records are being built: a `view_kept.<view>` setting is in
+        /// force, and the build has not reached its `Keep`, so reads compute
+        /// it. A build a runner left owed goes on at the next open.
+        Building,
+        /// Its records are not kept at this position, or by this lake.
+        NotKeptHere,
+        /// Its reader is admitted only some records of the view, or of a type
+        /// it reads: its records are computed from those alone. A read may
+        /// still be served from kept records where the groups carry the
+        /// grant's fields; that is a speed, not something this promises.
+        OnlySome,
+    }
 }
 
 impl Kept {

@@ -63,6 +63,7 @@ What kind of failure a JSON parser met, said without the text it quotes, which m
 | `data` | — | not of the expected shape | JSON of another shape than the one read. |
 | `eof` | — | cut short | JSON cut short. |
 | `io` | — | an I/O failure | A failure to read the bytes. |
+| `positional` | `takes` (String) | its members are named, not given by position: write it as an object that takes {takes} | A sequence where the contract takes an object: its members are named, not given by position. |
 
 ## `Form`
 

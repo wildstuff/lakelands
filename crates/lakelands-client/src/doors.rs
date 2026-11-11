@@ -808,13 +808,18 @@ struct Commits {
 
 impl Commits {
     fn line(&mut self, text: &[u8]) -> Result<Committed> {
-        if let Ok(c) = serde_json::from_slice::<Committed>(text) {
+        let read = serde_json::from_slice::<serde_json::Value>(text)
+            .ok()
+            .and_then(|v| lakelands_api::strict::from_value::<Committed>(v).ok());
+        if let Some(c) = read {
             self.wire.saw(c.position);
             return Ok(c);
         }
         self.upload.stop();
-        Err(serde_json::from_slice::<Error>(text)
-            .unwrap_or_else(|_| self.wire.unavailable(Exchange::LineNotTheContract)))
+        Err(serde_json::from_slice::<serde_json::Value>(text)
+            .ok()
+            .and_then(|v| lakelands_api::strict::from_value::<Error>(v).ok())
+            .unwrap_or_else(|| self.wire.unavailable(Exchange::LineNotTheContract)))
     }
 
     /// Whether the silence that began at `since` has lasted the bound, as

@@ -91,7 +91,8 @@ fn every_case_and_place_reads_back_as_itself_through_an_error() {
         let said = e.case().unwrap_or_else(|| panic!("no case in {wire}"));
         let known = !matches!(said.case, Case::Unknown(_));
         let placed = !said.at.iter().any(|p| matches!(p, Place::Unknown(_)));
-        assert!(known && placed, "not read as itself: {wire}");
+        assert!(known, "case not read as itself: {wire} => {:?}", said.case);
+        assert!(placed, "place not read as itself: {wire} => {:?}", said.at);
         let back = serde_json::to_value(&e).expect("written");
         assert_eq!(back["reason"]["code"], case["code"], "{wire}");
         assert_eq!(back["reason"]["at"][0]["code"], at["code"], "{wire}");

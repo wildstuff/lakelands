@@ -87,12 +87,16 @@ fn block(lines: &[String]) -> std::result::Result<Said, NotSse> {
         return Ok(Said::Next(Position(n)));
     }
     match (kind.as_deref(), data) {
-        (Some("error"), Some(d)) => serde_json::from_str(&d)
+        (Some("error"), Some(d)) => serde_json::from_str::<serde_json::Value>(&d)
+            .ok()
+            .and_then(|v| lakelands_api::strict::from_value(v).ok())
             .map(Said::Failed)
-            .map_err(|_| NotSse),
-        (_, Some(d)) => serde_json::from_str(&d)
+            .ok_or(NotSse),
+        (_, Some(d)) => serde_json::from_str::<serde_json::Value>(&d)
+            .ok()
+            .and_then(|v| lakelands_api::strict::from_value(v).ok())
             .map(|e| Said::Event(Box::new(e), overruled, append))
-            .map_err(|_| NotSse),
+            .ok_or(NotSse),
         (_, None) => Ok(Said::Nothing),
     }
 }

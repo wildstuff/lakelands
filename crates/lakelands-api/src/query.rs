@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::Case;
 use crate::expr::Condition;
@@ -124,6 +124,8 @@ pub struct Step {
     pub absent: bool,
 }
 
+crate::tagged_enum! {
+    tag = "as", names = "snake_case", deny;
 /// What a pattern returns.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "as", rename_all = "snake_case")]
@@ -198,42 +200,6 @@ pub enum Projection {
     /// `too_large`, never cut (`docs/decisions/026-the-store-walks-the-graph.md`).
     Communities,
 }
-
-impl<'de> Deserialize<'de> for Projection {
-    /// Serde reads a tagged unit variant and drops the rest of its map, so
-    /// a projection without members is read as an empty struct, which
-    /// refuses any member beside `as` (lakelands#563).
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Projection, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields, tag = "as", rename_all = "snake_case")]
-        enum Wire {
-            Rows {
-                #[serde(default)]
-                fields: Vec<String>,
-            },
-            Graph {},
-            Aggregate(Aggregate),
-            Degree {},
-            Components {},
-            Reach {},
-            PageRank {},
-            Cheapest {
-                weight: FieldName,
-            },
-            Communities {},
-        }
-        Ok(match Wire::deserialize(d)? {
-            Wire::Rows { fields } => Projection::Rows { fields },
-            Wire::Graph {} => Projection::Graph,
-            Wire::Aggregate(a) => Projection::Aggregate(a),
-            Wire::Degree {} => Projection::Degree,
-            Wire::Components {} => Projection::Components,
-            Wire::Reach {} => Projection::Reach,
-            Wire::PageRank {} => Projection::PageRank,
-            Wire::Cheapest { weight } => Projection::Cheapest { weight },
-            Wire::Communities {} => Projection::Communities,
-        })
-    }
 }
 
 impl Default for Projection {
@@ -243,8 +209,7 @@ impl Default for Projection {
 }
 
 /// The one pattern query.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Pattern {
     /// Where it starts.
     pub start: Start,
@@ -272,6 +237,47 @@ pub struct Pattern {
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,
+}
+
+impl<'de> Deserialize<'de> for Pattern {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Pattern, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            start: Start,
+            #[serde(default)]
+            steps: Vec<Step>,
+            #[serde(default)]
+            to: Option<(TypeName, RecordKey)>,
+            #[serde(default)]
+            project: Projection,
+            #[serde(default)]
+            order_by: Vec<Order>,
+            #[serde(default)]
+            limit: Option<u32>,
+            #[serde(default)]
+            cursor: Option<Cursor>,
+        }
+        let mut map = crate::strict::fields::<D::Error, D>(
+            d,
+            &[
+                "start", "steps", "to", "project", "order_by", "limit", "cursor", "as_of",
+                "valid_at",
+            ],
+        )?;
+        let at = crate::strict::axes(&mut map)?;
+        let wire: Wire = crate::strict::at(map)?;
+        Ok(Pattern {
+            start: wire.start,
+            steps: wire.steps,
+            to: wire.to,
+            project: wire.project,
+            order_by: wire.order_by,
+            limit: wire.limit,
+            cursor: wire.cursor,
+            at,
+        })
+    }
 }
 
 impl Pattern {
@@ -373,7 +379,7 @@ impl Pattern {
 /// change to the records its `MATCH` selects, sent without a plan's id.
 ///
 /// [`Catalog::query`]: crate::Catalog::query
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum StatementAnswer {
@@ -391,39 +397,68 @@ pub enum StatementAnswer {
     Planned(Reply<crate::write::Plan>),
 }
 
-/// The answer to a pattern query.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "shape", rename_all = "snake_case")]
-pub enum QueryResult {
-    /// Bindings per step, one row per match.
-    Rows {
-        /// The rows, keyed by path.
-        rows: Vec<BTreeMap<String, Value>>,
-        /// Where the next page starts, if there is one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        next_cursor: Option<Cursor>,
-    },
-    /// Nodes and edges.
-    Graph {
-        /// The records reached.
-        nodes: Vec<Record>,
-        /// Each node's depth, in the order of `nodes`: the fewest hops that
-        /// reach it from a start, 0 for a start; along a path, its hop.
-        #[serde(default)]
-        depths: Vec<u32>,
-        /// The links walked.
-        edges: Vec<Edge>,
-        /// Whether the limit cut the graph short.
-        truncated: bool,
-        /// Where the next page starts, exactly when `truncated`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        next_cursor: Option<Cursor>,
-    },
-    /// Aggregates over the matches.
-    Groups {
-        /// One row per group.
-        rows: Vec<crate::read::Group>,
-    },
+impl<'de> Deserialize<'de> for StatementAnswer {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<StatementAnswer, D::Error> {
+        use serde::de::Error as _;
+        let value = serde_json::Value::deserialize(d)?;
+        #[derive(Deserialize)]
+        struct Explained {
+            pattern: Box<Pattern>,
+        }
+        if let Ok(e) = crate::strict::read::<Explained>(value.clone()) {
+            return Ok(StatementAnswer::Explained { pattern: e.pattern });
+        }
+        if let Ok(r) = crate::strict::read::<Reply<QueryResult>>(value.clone()) {
+            return Ok(StatementAnswer::Read(r));
+        }
+        if let Ok(w) = crate::strict::read::<crate::write::Outcome>(value.clone()) {
+            return Ok(StatementAnswer::Written(w));
+        }
+        if let Ok(p) = crate::strict::read::<Reply<crate::write::Plan>>(value) {
+            return Ok(StatementAnswer::Planned(p));
+        }
+        Err(D::Error::custom(
+            "data did not match any variant of untagged enum StatementAnswer",
+        ))
+    }
+}
+
+crate::tagged_enum! {
+    tag = "shape", names = "snake_case", permit;
+    /// The answer to a pattern query.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(tag = "shape", rename_all = "snake_case")]
+    pub enum QueryResult {
+        /// Bindings per step, one row per match.
+        Rows {
+            /// The rows, keyed by path.
+            rows: Vec<BTreeMap<String, Value>>,
+            /// Where the next page starts, if there is one.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            next_cursor: Option<Cursor>,
+        },
+        /// Nodes and edges.
+        Graph {
+            /// The records reached.
+            nodes: Vec<Record>,
+            /// Each node's depth, in the order of `nodes`: the fewest hops that
+            /// reach it from a start, 0 for a start; along a path, its hop.
+            #[serde(default)]
+            depths: Vec<u32>,
+            /// The links walked.
+            edges: Vec<Edge>,
+            /// Whether the limit cut the graph short.
+            truncated: bool,
+            /// Where the next page starts, exactly when `truncated`.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            next_cursor: Option<Cursor>,
+        },
+        /// Aggregates over the matches.
+        Groups {
+            /// One row per group.
+            rows: Vec<crate::read::Group>,
+        },
+    }
 }
 
 /// One link between two records.
@@ -440,84 +475,87 @@ pub struct Edge {
     pub fields: BTreeMap<FieldName, Value>,
 }
 
-/// How a search ranks.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, tag = "mode", rename_all = "snake_case")]
-pub enum SearchMode {
-    /// Full text over the type's searchable fields, or the ones named.
-    Lexical {
-        /// The words searched for.
-        text: String,
-        /// Match only in these searchable fields; absent, in every one the
-        /// caller reads.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fields: Option<Vec<FieldName>>,
-        /// A weight for a match of the text in each searchable field named,
-        /// winning over its type's `search_weights` setting's for that
-        /// field; a field it does not name takes the setting's, else 1.
-        /// A field `fields` leaves out is not searched, so weighs nothing.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        text_fields: Option<BTreeMap<FieldName, f64>>,
-    },
-    /// Nearest neighbours of a vector the caller supplies, or of its
-    /// `text` embedded by the lake.
-    Vector {
-        /// The vector field searched.
-        field: FieldName,
-        /// The query vector; empty where `text` is given.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        vector: Vec<f32>,
-        /// Words the lake embeds into the query vector with the model of
-        /// `field`, which must be an embedding; the search is then ranked
-        /// as one bringing that vector.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        text: Option<String>,
-        /// The weight of `field`'s ranking against `also`'s; absent, 1.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        weight: Option<f64>,
-        /// Further vector fields, each ranked by its own query vector
-        /// and fused with `field`'s ranking by weighted rank.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        also: Vec<VectorTerm>,
-        /// The model that made the query vector, if the caller names it:
-        /// over a field declared as an embedding, it must be the field's
-        /// own model.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-    },
-    /// Both, fused by rank. Without a vector, the store asks the lake's
-    /// embedding backend for one, or falls back to lexical and says so.
-    Hybrid {
-        /// The words searched for.
-        text: String,
-        /// The vector field searched.
-        field: FieldName,
-        /// The query vector, if the caller has one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        vector: Option<Vec<f32>>,
-        /// Match the text only in these searchable fields; absent, in
-        /// every one the caller reads. The vector half is not narrowed.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fields: Option<Vec<FieldName>>,
-        /// A weight for a match of the text in each searchable field named,
-        /// winning over its type's `search_weights` setting's for that
-        /// field; a field it does not name takes the setting's, else 1.
-        /// A field `fields` leaves out is not searched, so weighs nothing.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        text_fields: Option<BTreeMap<FieldName, f64>>,
-        /// The weight of the vector half; absent, 1.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        weight: Option<f64>,
-        /// The weight of the lexical half; absent, 1.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        text_weight: Option<f64>,
-        /// The model that made the query vector, if the caller names it:
-        /// over a field declared as an embedding, it must be the field's
-        /// own model. It names the caller's `vector`, so without one it is
-        /// refused.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-    },
+crate::tagged_enum! {
+    tag = "mode", names = "snake_case", deny;
+    /// How a search ranks.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields, tag = "mode", rename_all = "snake_case")]
+    pub enum SearchMode {
+        /// Full text over the type's searchable fields, or the ones named.
+        Lexical {
+            /// The words searched for.
+            text: String,
+            /// Match only in these searchable fields; absent, in every one the
+            /// caller reads.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            fields: Option<Vec<FieldName>>,
+            /// A weight for a match of the text in each searchable field named,
+            /// winning over its type's `search_weights` setting's for that
+            /// field; a field it does not name takes the setting's, else 1.
+            /// A field `fields` leaves out is not searched, so weighs nothing.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            text_fields: Option<BTreeMap<FieldName, f64>>,
+        },
+        /// Nearest neighbours of a vector the caller supplies, or of its
+        /// `text` embedded by the lake.
+        Vector {
+            /// The vector field searched.
+            field: FieldName,
+            /// The query vector; empty where `text` is given.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            vector: Vec<f32>,
+            /// Words the lake embeds into the query vector with the model of
+            /// `field`, which must be an embedding; the search is then ranked
+            /// as one bringing that vector.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            text: Option<String>,
+            /// The weight of `field`'s ranking against `also`'s; absent, 1.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            weight: Option<f64>,
+            /// Further vector fields, each ranked by its own query vector
+            /// and fused with `field`'s ranking by weighted rank.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            also: Vec<VectorTerm>,
+            /// The model that made the query vector, if the caller names it:
+            /// over a field declared as an embedding, it must be the field's
+            /// own model.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            model: Option<String>,
+        },
+        /// Both, fused by rank. Without a vector, the store asks the lake's
+        /// embedding backend for one, or falls back to lexical and says so.
+        Hybrid {
+            /// The words searched for.
+            text: String,
+            /// The vector field searched.
+            field: FieldName,
+            /// The query vector, if the caller has one.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            vector: Option<Vec<f32>>,
+            /// Match the text only in these searchable fields; absent, in
+            /// every one the caller reads. The vector half is not narrowed.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            fields: Option<Vec<FieldName>>,
+            /// A weight for a match of the text in each searchable field named,
+            /// winning over its type's `search_weights` setting's for that
+            /// field; a field it does not name takes the setting's, else 1.
+            /// A field `fields` leaves out is not searched, so weighs nothing.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            text_fields: Option<BTreeMap<FieldName, f64>>,
+            /// The weight of the vector half; absent, 1.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            weight: Option<f64>,
+            /// The weight of the lexical half; absent, 1.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            text_weight: Option<f64>,
+            /// The model that made the query vector, if the caller names it:
+            /// over a field declared as an embedding, it must be the field's
+            /// own model. It names the caller's `vector`, so without one it is
+            /// refused.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            model: Option<String>,
+        },
+    }
 }
 
 /// The second stage of a search: the first `top` hits of its ranking,
@@ -860,33 +898,68 @@ fn default_k() -> u32 {
 /// A search's own members as it is read, apart from its mode's: serde
 /// refuses no unknown member beside a flattened enum, so each is read by
 /// itself and refuses what it does not take (lakelands#563).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SearchWire {
-    #[serde(rename = "type")]
     ty: TypeName,
-    #[serde(default = "default_k")]
     k: u32,
-    #[serde(default)]
     cursor: Option<Cursor>,
-    #[serde(default, rename = "where")]
     filter: Option<Condition>,
-    #[serde(default)]
     rerank: Option<Rerank>,
-    #[serde(default)]
     with_meta: bool,
-    #[serde(default)]
     matches: bool,
-    #[serde(default)]
     text_as_of: bool,
-    #[serde(default, flatten)]
     at: ReadAt,
 }
 
+impl<'de> Deserialize<'de> for SearchWire {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<SearchWire, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Own {
+            #[serde(rename = "type")]
+            ty: TypeName,
+            #[serde(default = "default_k")]
+            k: u32,
+            #[serde(default)]
+            cursor: Option<Cursor>,
+            #[serde(default, rename = "where")]
+            filter: Option<Condition>,
+            #[serde(default)]
+            rerank: Option<Rerank>,
+            #[serde(default)]
+            with_meta: bool,
+            #[serde(default)]
+            matches: bool,
+            #[serde(default)]
+            text_as_of: bool,
+        }
+        let mut map = crate::strict::fields::<D::Error, D>(
+            d,
+            &[
+                "type", "k", "cursor", "where", "rerank", "with_meta", "matches", "text_as_of",
+                "as_of", "valid_at",
+            ],
+        )?;
+        let at = crate::strict::axes(&mut map)?;
+        let own: Own = crate::strict::at(map)?;
+        Ok(SearchWire {
+            ty: own.ty,
+            k: own.k,
+            cursor: own.cursor,
+            filter: own.filter,
+            rerank: own.rerank,
+            with_meta: own.with_meta,
+            matches: own.matches,
+            text_as_of: own.text_as_of,
+            at,
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for Search {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Search, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Search, D::Error> {
         use serde::de::Error;
-        let mut own = serde_json::Map::deserialize(d)?;
+        let value = serde_json::Value::deserialize(d)?;
+        let mut own = crate::strict::object::<D::Error>(value, "search")?;
         let members = [
             "mode", "text", "fields", "field", "vector", "weight", "also", "model",
         ];
@@ -901,8 +974,8 @@ impl<'de> Deserialize<'de> for Search {
         if ranks && !mode.contains_key("field") {
             return Err(D::Error::missing_field("field"));
         }
-        let mode = serde_json::from_value(Value::Object(mode)).map_err(D::Error::custom)?;
-        let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
+        let mode = crate::strict::at::<SearchMode, D::Error>(mode)?;
+        let w: SearchWire = crate::strict::at::<SearchWire, D::Error>(own)?;
         Ok(Search {
             ty: w.ty,
             mode,

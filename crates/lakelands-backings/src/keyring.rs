@@ -78,8 +78,14 @@ impl FileKeyring {
         match fs::read(path) {
             Ok(bytes) => {
                 let bytes = Zeroizing::new(bytes);
-                let ring = serde_json::from_slice(&bytes);
-                ring.map_err(|e| failed(Doing::Read, Detail::json(&e)))
+                let ring = serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .map_err(|e| failed(Doing::Read, Detail::json(&e)))
+                    .and_then(|v| {
+                        lakelands_api::strict::from_value(v).map_err(|e| {
+                            failed(Doing::Read, Detail::scrubbed(e))
+                        })
+                    });
+                ring
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Ring::default()),
             Err(e) => Err(failed(Doing::Read, Detail::io(&e))),

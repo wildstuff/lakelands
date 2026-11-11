@@ -161,390 +161,393 @@ pub struct Sealed {
     pub boxed: Option<String>,
 }
 
-/// Every kind of event, and its payload. The set is closed per format
-/// version; a new kind is a format change (`docs/log-format.md`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum EventBody {
-    /// The first event of every lake, at position 0.
-    LakeCreated {
-        /// The log format version the lake was created with.
-        format: u32,
-    },
-    /// A writer took the lake's lease.
-    LeaseTaken {
-        /// The new fencing token; greater than every earlier one.
-        fence: u64,
-        /// Who holds it: a process description for the operator.
-        holder: String,
-    },
-    /// A declaration entered the ontology.
-    Declared {
-        /// The declaration.
-        declaration: Declaration,
-        /// For a type: its schema hash after this event.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        schema_hash: Option<String>,
-        /// The declaration's version after this event (1 for new).
-        version: u32,
-        /// Whether another declaration of the same set follows in this
-        /// append: the records the set computes again are computed once,
-        /// at its last declaration.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        with_the_set: bool,
-    },
-    /// A type changed shape; its stored records follow in the fold.
-    Migrated {
-        /// The migration.
-        migration: Migration,
-        /// The schema hash after.
-        schema_hash: String,
-        /// The type's version after.
-        version: u32,
-        /// The preflight report it was applied against.
-        report_id: String,
-        /// Every record key the migration moves, over every type it
-        /// re-keys; empty when no key changes.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        rekeyed: Vec<crate::write::Rekey>,
-    },
-    /// A value type's migration that renames values: its declaration is
-    /// put in force and every stored record that holds an old value takes
-    /// the new one in the fold.
-    ValueTypeMigrated {
-        /// The value type's new declaration.
-        declaration: crate::ontology::ValueTypeDecl,
-        /// Its version after this event.
-        version: u32,
-        /// The values renamed: old value to new value.
-        renames: Vec<(String, String)>,
-        /// The preflight report it was applied against.
-        report_id: String,
-        /// The types whose fields use the value type, which the fold
-        /// rewrites: every one the ontology names, in name order.
-        types: Vec<TypeName>,
-    },
-    /// An authored write: `upsert`, a verb's effect, an accepted
-    /// proposal.
-    RecordUpserted {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// The record's version after this event.
-        version: Version,
-        /// The sparse patch.
-        patch: Patch,
-        /// Whether the write found no live record under the key: with
-        /// `version` 1 the first, above it made again.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        made: bool,
-    },
-    /// A write from a source, through `ingest`.
-    RecordIngested {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// The record's version after this event.
-        version: Version,
-        /// The sparse patch.
-        patch: Patch,
-        /// Whether the write found no live record under the key: with
-        /// `version` 1 the first, above it made again.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        made: bool,
-    },
-    /// A host forgot a source: its keys are destroyed, and every value it
-    /// sealed reads as erased, at every position
-    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
-    SourceForgotten {
-        /// The source.
-        source: SourceId,
-        /// The versions of its key the act destroys.
-        keys: Vec<crate::id::KeyId>,
-        /// The position of the act this event belongs to: the act's first
-        /// event, which its `act_whole` names. An act a crash left between
-        /// its turns may append past another act, so its events are not
-        /// the run of them that sits together (099).
-        act: Position,
-    },
-    /// A host took back part of a source's values: each one a selected
-    /// `record_ingested` of the source before this event carries reads as
-    /// erased, at every position
-    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
-    ValuesRemoved {
-        /// The source.
-        source: SourceId,
-        /// The selection, as asked.
-        selection: crate::write::Selection,
-        /// For a time of the log's clock, the first position it does not
-        /// reach.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        before: Option<Position>,
-        /// The versions of the source's key it destroys, oldest first: the
-        /// longest prefix whose values it all selects.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        keys: Vec<crate::id::KeyId>,
-        /// The source's keys of deliveries sealed apart it destroys, in id
-        /// order: each whose values it all selects, from format 18 on.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        apart: Vec<crate::id::KeyId>,
-    },
-    /// One part of a thinning act: the records of a type a host thinned
-    /// past a horizon, each named by its key. The first part begins the
-    /// act and carries the horizon; a later part carries the same horizon
-    /// and the keys it takes. The log keeps every event, and a rebuild
-    /// folds the parts again
-    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
-    ValuesThinned {
-        /// The records' type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The field of instants or dates the act judged.
-        by: FieldName,
-        /// The horizon: every record whose field is certainly before it,
-        /// and whose key the act had not taken, is taken.
-        before: Timestamp,
-        /// The keys this part takes.
-        keys: Vec<RecordKey>,
-    },
-    /// A record was retired.
-    RecordRetired {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// The record's version after this event.
-        version: Version,
-    },
-    /// A record was withheld from ordinary reads (a retention hold).
-    RecordRestricted {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// The record's version after this event.
-        version: Version,
-        /// Why, as the host gave it.
-        reason: String,
-    },
-    /// A hold was lifted.
-    RecordUnrestricted {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// The record's version after this event.
-        version: Version,
-    },
-    /// A verb was called and ran. Its writes follow, caused by this
-    /// event.
-    VerbCalled {
-        /// The verb.
-        verb: VerbName,
-        /// The record it was called on; absent for a verb called on its
-        /// type.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<RecordKey>,
-        /// Its payload.
-        payload: Patch,
-    },
-    /// A write was recorded as a proposal instead of being applied.
-    WriteProposed {
-        /// The proposal's identifier.
-        proposal: ProposalId,
-        /// What it would write.
-        write: ProposedWrite,
-        /// Why it waits.
-        why: String,
-        /// Whether its proposer's grant admits only some records of the
-        /// type it writes: its accept is refused once the record or the
-        /// type changed after it.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        pinned: bool,
-    },
-    /// A proposal was accepted. Its write follows, caused by this event.
-    WriteAccepted {
-        /// The proposal.
-        proposal: ProposalId,
-    },
-    /// A proposal was rejected. Nothing was written.
-    WriteRejected {
-        /// The proposal.
-        proposal: ProposalId,
-        /// The reason given.
-        reason: String,
-    },
-    /// A write made a trigger's condition hold. What reacts is the
-    /// host's business; this event is the durable fact that it is due.
-    TriggerFired {
-        /// The trigger.
-        trigger: TriggerName,
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// What kind of change fired it: the write at its `cause`. The
-        /// store writes it on every firing from format 17 on; a firing of
-        /// a format before carries none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        change: Option<ChangeKind>,
-        /// Whether that write made the record: it found no live record
-        /// under the key. Carried with `change`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        created: Option<bool>,
-    },
-    /// A write would have made a trigger's condition hold, at a depth where
-    /// a reaction to it could write nothing: the write's own depth is at
-    /// or above the bound that applies, so no `trigger_fired` is appended
-    /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
-    /// Added in format 17.
-    TriggerDropped {
-        /// The trigger.
-        trigger: TriggerName,
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// The depth of the write that would have fired it.
-        depth: u32,
-        /// The bound that applied.
-        max_depth: u32,
-        /// Whose bound it is.
-        bound: DepthBound,
-    },
-    /// A write moved a record into or out of an object set.
-    ObjectSetChanged {
-        /// The set.
-        set: String,
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// True if it joined, false if it left.
-        joined: bool,
-    },
-    /// The recorded output of a seam the store called (a function
-    /// backing, an embedding), read back on replay instead of calling
-    /// the seam again (`docs/decisions/002-determinism-is-the-boundary.md`).
-    OutputRecorded {
-        /// The seam and the name it was called under.
-        seam: String,
-        /// SHA-256 of the canonical bytes of the input.
-        input: Digest,
-        /// The output; `None` where `output_at` names it. An output of
-        /// `null` is `Some(Null)`, and read back so.
-        #[serde(
-            default,
-            deserialize_with = "crate::write::present",
-            skip_serializing_if = "Option::is_none"
-        )]
-        output: Option<Value>,
-        /// The position of the call's latest output, which a fill of an
-        /// output the lake holds names instead of carrying it again
-        /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output_at: Option<Position>,
-        /// The field it fills, if one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        field: Option<(TypeName, RecordKey, FieldName)>,
-    },
-    /// A checkpoint: the chain's state at a segment boundary, so that a
-    /// reader can verify later segments without the earlier ones, and a
-    /// missing earlier segment is detected rather than skipped.
-    Checkpoint {
-        /// The last position of the sealed segment.
-        through: Position,
-        /// The hash of the event at `through`.
-        hash: Digest,
-        /// Every sealed segment so far, oldest first.
-        segments: Vec<SegmentDigest>,
-    },
-    /// A record an ingest was refused, quarantined at the call's asking,
-    /// from format 21 on: one version of its id, its envelope naming the
-    /// source and the call's delivery
-    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
-    RecordQuarantined {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The key as sent.
-        key: RecordKey,
-        /// The quarantined record's id.
-        id: crate::quarantine::QuarantineId,
-        /// This version, from 1.
-        version: u32,
-        /// The cells as sent, each in its canonical form, those `sealed`
-        /// names left out.
-        cells: Patch,
-        /// What the source's key seals of the cells, in one box.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        sealed: Option<Sealed>,
-        /// When the source observed the values.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        seen_at: Option<crate::Timestamp>,
-        /// Where the values were read from, for a mirror's.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        upstream: Option<crate::record::Upstream>,
-        /// The refusal its writer would have been answered.
-        refusal: crate::Error,
-    },
-    /// A quarantined record closed, in the append of what closed it, from
-    /// format 21 on (085).
-    QuarantineClosed {
-        /// The quarantined record's id.
-        id: crate::quarantine::QuarantineId,
-        /// Its type, as its last version names it.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// Its key as sent.
-        key: RecordKey,
-        /// Why it closed.
-        why: crate::quarantine::ClosedWhy,
-    },
-    /// A host began a purge of a source: every live record the source
-    /// brought in is retired, in parts, and the act ends with its
-    /// `ActWhole` (`docs/decisions/039-a-source-is-retracted-as-one.md`,
-    /// `docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
-    SourcePurged {
-        /// The source.
-        source: SourceId,
-        /// The one type the purge is of; absent for a purge of the source
-        /// whole.
-        #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
-        ty: Option<TypeName>,
-    },
-    /// The last event of an act: every append the act makes is behind it
-    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
-    ActWhole {
-        /// The position of the act's first event: the `values_removed`,
-        /// `source_forgotten` or `source_purged` it began with.
-        act: Position,
-    },
-    /// A host erased the values of one record, one field of it, or one
-    /// quarantined row: each value of a selected write before this event
-    /// reads as erased, at every position, of every hand
-    /// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
-    ValuesErased {
-        /// The selection: a `record` or a `quarantined` one.
-        selection: crate::write::Selection,
-        /// The versions of the owning source's key it destroys, oldest
-        /// first.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        keys: Vec<crate::id::KeyId>,
-        /// The keys of deliveries sealed apart it destroys, in id order.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        apart: Vec<crate::id::KeyId>,
-    },
+crate::tagged_enum! {
+    tag = "kind", names = "snake_case", deny;
+    /// Every kind of event, and its payload. The set is closed per format
+    /// version; a new kind is a format change (`docs/log-format.md`).
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+    pub enum EventBody {
+        /// The first event of every lake, at position 0.
+        LakeCreated {
+            /// The log format version the lake was created with.
+            format: u32,
+        },
+        /// A writer took the lake's lease.
+        LeaseTaken {
+            /// The new fencing token; greater than every earlier one.
+            fence: u64,
+            /// Who holds it: a process description for the operator.
+            holder: String,
+        },
+        /// A declaration entered the ontology.
+        Declared {
+            /// The declaration.
+            declaration: Declaration,
+            /// For a type: its schema hash after this event.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            schema_hash: Option<String>,
+            /// The declaration's version after this event (1 for new).
+            version: u32,
+            /// Whether another declaration of the same set follows in this
+            /// append: the records the set computes again are computed once,
+            /// at its last declaration.
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            with_the_set: bool,
+        },
+        /// A type changed shape; its stored records follow in the fold.
+        Migrated {
+            /// The migration.
+            migration: Migration,
+            /// The schema hash after.
+            schema_hash: String,
+            /// The type's version after.
+            version: u32,
+            /// The preflight report it was applied against.
+            report_id: String,
+            /// Every record key the migration moves, over every type it
+            /// re-keys; empty when no key changes.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            rekeyed: Vec<crate::write::Rekey>,
+        },
+        /// A value type's migration that renames values: its declaration is
+        /// put in force and every stored record that holds an old value takes
+        /// the new one in the fold.
+        ValueTypeMigrated {
+            /// The value type's new declaration.
+            declaration: crate::ontology::ValueTypeDecl,
+            /// Its version after this event.
+            version: u32,
+            /// The values renamed: old value to new value.
+            renames: Vec<(String, String)>,
+            /// The preflight report it was applied against.
+            report_id: String,
+            /// The types whose fields use the value type, which the fold
+            /// rewrites: every one the ontology names, in name order.
+            types: Vec<TypeName>,
+        },
+        /// An authored write: `upsert`, a verb's effect, an accepted
+        /// proposal.
+        RecordUpserted {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// The record's version after this event.
+            version: Version,
+            /// The sparse patch.
+            patch: Patch,
+            /// Whether the write found no live record under the key: with
+            /// `version` 1 the first, above it made again.
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            made: bool,
+        },
+        /// A write from a source, through `ingest`.
+        RecordIngested {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// The record's version after this event.
+            version: Version,
+            /// The sparse patch.
+            patch: Patch,
+            /// Whether the write found no live record under the key: with
+            /// `version` 1 the first, above it made again.
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            made: bool,
+        },
+        /// A host forgot a source: its keys are destroyed, and every value it
+        /// sealed reads as erased, at every position
+        /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+        SourceForgotten {
+            /// The source.
+            source: SourceId,
+            /// The versions of its key the act destroys.
+            keys: Vec<crate::id::KeyId>,
+            /// The position of the act this event belongs to: the act's first
+            /// event, which its `act_whole` names. An act a crash left between
+            /// its turns may append past another act, so its events are not
+            /// the run of them that sits together (099).
+            act: Position,
+        },
+        /// A host took back part of a source's values: each one a selected
+        /// `record_ingested` of the source before this event carries reads as
+        /// erased, at every position
+        /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+        ValuesRemoved {
+            /// The source.
+            source: SourceId,
+            /// The selection, as asked.
+            selection: crate::write::Selection,
+            /// For a time of the log's clock, the first position it does not
+            /// reach.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            before: Option<Position>,
+            /// The versions of the source's key it destroys, oldest first: the
+            /// longest prefix whose values it all selects.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            keys: Vec<crate::id::KeyId>,
+            /// The source's keys of deliveries sealed apart it destroys, in id
+            /// order: each whose values it all selects, from format 18 on.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            apart: Vec<crate::id::KeyId>,
+        },
+        /// One part of a thinning act: the records of a type a host thinned
+        /// past a horizon, each named by its key. The first part begins the
+        /// act and carries the horizon; a later part carries the same horizon
+        /// and the keys it takes. The log keeps every event, and a rebuild
+        /// folds the parts again
+        /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+        ValuesThinned {
+            /// The records' type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The field of instants or dates the act judged.
+            by: FieldName,
+            /// The horizon: every record whose field is certainly before it,
+            /// and whose key the act had not taken, is taken.
+            before: Timestamp,
+            /// The keys this part takes.
+            keys: Vec<RecordKey>,
+        },
+        /// A record was retired.
+        RecordRetired {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// The record's version after this event.
+            version: Version,
+        },
+        /// A record was withheld from ordinary reads (a retention hold).
+        RecordRestricted {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// The record's version after this event.
+            version: Version,
+            /// Why, as the host gave it.
+            reason: String,
+        },
+        /// A hold was lifted.
+        RecordUnrestricted {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// The record's version after this event.
+            version: Version,
+        },
+        /// A verb was called and ran. Its writes follow, caused by this
+        /// event.
+        VerbCalled {
+            /// The verb.
+            verb: VerbName,
+            /// The record it was called on; absent for a verb called on its
+            /// type.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            key: Option<RecordKey>,
+            /// Its payload.
+            payload: Patch,
+        },
+        /// A write was recorded as a proposal instead of being applied.
+        WriteProposed {
+            /// The proposal's identifier.
+            proposal: ProposalId,
+            /// What it would write.
+            write: ProposedWrite,
+            /// Why it waits.
+            why: String,
+            /// Whether its proposer's grant admits only some records of the
+            /// type it writes: its accept is refused once the record or the
+            /// type changed after it.
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            pinned: bool,
+        },
+        /// A proposal was accepted. Its write follows, caused by this event.
+        WriteAccepted {
+            /// The proposal.
+            proposal: ProposalId,
+        },
+        /// A proposal was rejected. Nothing was written.
+        WriteRejected {
+            /// The proposal.
+            proposal: ProposalId,
+            /// The reason given.
+            reason: String,
+        },
+        /// A write made a trigger's condition hold. What reacts is the
+        /// host's business; this event is the durable fact that it is due.
+        TriggerFired {
+            /// The trigger.
+            trigger: TriggerName,
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// What kind of change fired it: the write at its `cause`. The
+            /// store writes it on every firing from format 17 on; a firing of
+            /// a format before carries none.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            change: Option<ChangeKind>,
+            /// Whether that write made the record: it found no live record
+            /// under the key. Carried with `change`.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            created: Option<bool>,
+        },
+        /// A write would have made a trigger's condition hold, at a depth where
+        /// a reaction to it could write nothing: the write's own depth is at
+        /// or above the bound that applies, so no `trigger_fired` is appended
+        /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
+        /// Added in format 17.
+        TriggerDropped {
+            /// The trigger.
+            trigger: TriggerName,
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// The depth of the write that would have fired it.
+            depth: u32,
+            /// The bound that applied.
+            max_depth: u32,
+            /// Whose bound it is.
+            bound: DepthBound,
+        },
+        /// A write moved a record into or out of an object set.
+        ObjectSetChanged {
+            /// The set.
+            set: String,
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// True if it joined, false if it left.
+            joined: bool,
+        },
+        /// The recorded output of a seam the store called (a function
+        /// backing, an embedding), read back on replay instead of calling
+        /// the seam again (`docs/decisions/002-determinism-is-the-boundary.md`).
+        OutputRecorded {
+            /// The seam and the name it was called under.
+            seam: String,
+            /// SHA-256 of the canonical bytes of the input.
+            input: Digest,
+            /// The output; `None` where `output_at` names it. An output of
+            /// `null` is `Some(Null)`, and read back so.
+            #[serde(
+                default,
+                deserialize_with = "crate::write::present",
+                skip_serializing_if = "Option::is_none"
+            )]
+            output: Option<Value>,
+            /// The position of the call's latest output, which a fill of an
+            /// output the lake holds names instead of carrying it again
+            /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            output_at: Option<Position>,
+            /// The field it fills, if one.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            field: Option<(TypeName, RecordKey, FieldName)>,
+        },
+        /// A checkpoint: the chain's state at a segment boundary, so that a
+        /// reader can verify later segments without the earlier ones, and a
+        /// missing earlier segment is detected rather than skipped.
+        Checkpoint {
+            /// The last position of the sealed segment.
+            through: Position,
+            /// The hash of the event at `through`.
+            hash: Digest,
+            /// Every sealed segment so far, oldest first.
+            segments: Vec<SegmentDigest>,
+        },
+        /// A record an ingest was refused, quarantined at the call's asking,
+        /// from format 21 on: one version of its id, its envelope naming the
+        /// source and the call's delivery
+        /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+        RecordQuarantined {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The key as sent.
+            key: RecordKey,
+            /// The quarantined record's id.
+            id: crate::quarantine::QuarantineId,
+            /// This version, from 1.
+            version: u32,
+            /// The cells as sent, each in its canonical form, those `sealed`
+            /// names left out.
+            cells: Patch,
+            /// What the source's key seals of the cells, in one box.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            sealed: Option<Sealed>,
+            /// When the source observed the values.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            seen_at: Option<crate::Timestamp>,
+            /// Where the values were read from, for a mirror's.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            upstream: Option<crate::record::Upstream>,
+            /// The refusal its writer would have been answered.
+            refusal: crate::Error,
+        },
+        /// A quarantined record closed, in the append of what closed it, from
+        /// format 21 on (085).
+        QuarantineClosed {
+            /// The quarantined record's id.
+            id: crate::quarantine::QuarantineId,
+            /// Its type, as its last version names it.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// Its key as sent.
+            key: RecordKey,
+            /// Why it closed.
+            why: crate::quarantine::ClosedWhy,
+        },
+        /// A host began a purge of a source: every live record the source
+        /// brought in is retired, in parts, and the act ends with its
+        /// `ActWhole` (`docs/decisions/039-a-source-is-retracted-as-one.md`,
+        /// `docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+        SourcePurged {
+            /// The source.
+            source: SourceId,
+            /// The one type the purge is of; absent for a purge of the source
+            /// whole.
+            #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+            ty: Option<TypeName>,
+        },
+        /// The last event of an act: every append the act makes is behind it
+        /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+        ActWhole {
+            /// The position of the act's first event: the `values_removed`,
+            /// `source_forgotten` or `source_purged` it began with.
+            act: Position,
+        },
+        /// A host erased the values of one record, one field of it, or one
+        /// quarantined row: each value of a selected write before this event
+        /// reads as erased, at every position, of every hand
+        /// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+        ValuesErased {
+            /// The selection: a `record` or a `quarantined` one.
+            selection: crate::write::Selection,
+            /// The versions of the owning source's key it destroys, oldest
+            /// first.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            keys: Vec<crate::id::KeyId>,
+            /// The keys of deliveries sealed apart it destroys, in id order.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            apart: Vec<crate::id::KeyId>,
+        },
+    }
 }
 
 /// The kinds of one format version: `EventBody::kind` and [`KINDS`] come

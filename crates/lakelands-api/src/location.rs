@@ -107,53 +107,56 @@ impl Location {
     }
 }
 
-/// Which engine keeps a lake, with that engine's own settings.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "engine", rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum EngineConfig {
-    /// The SQLite engine: the lake's log segments live in `dir`, its
-    /// projection file in `projection_dir`.
-    Sqlite {
-        /// The lake's directory; created on first open.
-        dir: PathBuf,
-        /// The projection's directory, one lake's alone; `dir` when absent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        projection_dir: Option<PathBuf>,
-        /// How the engine sizes its caches and checkpoints its projection.
-        #[serde(default)]
-        tuning: SqliteTuning,
-    },
-    /// The in-memory engine.
-    Memory,
-    /// The PostgreSQL engine: the lake kept in one schema of the database
-    /// `url` names (`docs/decisions/038-a-lake-in-postgresql.md`).
-    Postgres {
-        /// The connection, as a `postgres://` URL. Its `sslmode` is not
-        /// read: TLS is `tls`.
-        url: String,
-        /// The schema that holds the lake; `lakelands_<lake>` when absent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        schema: Option<String>,
-        /// How the connection is secured.
-        #[serde(default)]
-        tls: PgTls,
-        /// Timeouts the engine sets on its connections.
-        #[serde(default)]
-        tuning: PgTuning,
-        /// The tablespaces the lake's tables and indexes are made in.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tablespaces: Option<PgTablespaces>,
-    },
-    /// An engine this crate does not name, selected by `name` and
-    /// configured by `settings` (a host's own engine, for instance).
-    Other {
-        /// The engine's name, as it registers itself.
-        name: String,
-        /// Settings the engine interprets.
-        #[serde(default)]
-        settings: BTreeMap<String, serde_json::Value>,
-    },
+crate::tagged_enum! {
+    tag = "engine", names = "snake_case", permit;
+    /// Which engine keeps a lake, with that engine's own settings.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(tag = "engine", rename_all = "snake_case")]
+    #[non_exhaustive]
+    pub enum EngineConfig {
+        /// The SQLite engine: the lake's log segments live in `dir`, its
+        /// projection file in `projection_dir`.
+        Sqlite {
+            /// The lake's directory; created on first open.
+            dir: PathBuf,
+            /// The projection's directory, one lake's alone; `dir` when absent.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            projection_dir: Option<PathBuf>,
+            /// How the engine sizes its caches and checkpoints its projection.
+            #[serde(default)]
+            tuning: SqliteTuning,
+        },
+        /// The in-memory engine.
+        Memory,
+        /// The PostgreSQL engine: the lake kept in one schema of the database
+        /// `url` names (`docs/decisions/038-a-lake-in-postgresql.md`).
+        Postgres {
+            /// The connection, as a `postgres://` URL. Its `sslmode` is not
+            /// read: TLS is `tls`.
+            url: String,
+            /// The schema that holds the lake; `lakelands_<lake>` when absent.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            schema: Option<String>,
+            /// How the connection is secured.
+            #[serde(default)]
+            tls: PgTls,
+            /// Timeouts the engine sets on its connections.
+            #[serde(default)]
+            tuning: PgTuning,
+            /// The tablespaces the lake's tables and indexes are made in.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            tablespaces: Option<PgTablespaces>,
+        },
+        /// An engine this crate does not name, selected by `name` and
+        /// configured by `settings` (a host's own engine, for instance).
+        Other {
+            /// The engine's name, as it registers itself.
+            name: String,
+            /// Settings the engine interprets.
+            #[serde(default)]
+            settings: BTreeMap<String, serde_json::Value>,
+        },
+    }
 }
 
 /// How the PostgreSQL engine secures its connections.

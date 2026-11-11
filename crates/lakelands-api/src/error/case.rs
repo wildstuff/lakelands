@@ -63,7 +63,7 @@ macro_rules! catalog {
         $(#[$meta])*
         // A parameter is documented by the template that names it.
         #[allow(missing_docs)]
-        #[derive(Clone, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
+        #[derive(Clone, Debug, PartialEq, Eq, ::serde::Serialize)]
         #[serde(tag = $tag, rename_all = "snake_case")]
         pub enum $set {
             $(
@@ -73,6 +73,100 @@ macro_rules! catalog {
             /// A case this build does not know.
             #[serde(skip)]
             Unknown($crate::error::Unknown),
+        }
+
+        // Serde's own `tag` reading buffers each variant's content into
+        // a private type before reading it, where the strict reader
+        // cannot see it. The tag is read here, and the case that it
+        // names is read member by member through the strict reader.
+        impl<'de> ::serde::Deserialize<'de> for $set {
+            fn deserialize<D>(d: D) -> ::std::result::Result<$set, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                #[derive(::serde::Deserialize)]
+                #[serde(rename_all = "snake_case")]
+                enum Codes {
+                    $($case,)*
+                }
+
+                fn read<E>(value: ::serde_json::Value) -> ::std::result::Result<$set, E>
+                where
+                    E: ::serde::de::Error,
+                {
+                    let mut map = $crate::strict::object(value, $tag)?;
+                    let code = $crate::strict::code(&mut map, $tag)?;
+                    let code: Codes = ::serde::Deserialize::deserialize(
+                        ::serde::de::value::StrDeserializer::<E>::new(&code),
+                    )?;
+                    Ok(match code {
+                        $(
+                            Codes::$case => {
+                                #[derive(::serde::Deserialize)]
+                                struct __Case {
+                                    $($($(#[$attr])* $param: $ty,)*)?
+                                }
+                                #[allow(unused_variables)]
+                                let __Case {
+                                    $($($param,)*)?
+                                } = $crate::strict::at(map)?;
+                                $set::$case $({ $($param),* })?
+                            }
+                        )*
+                    })
+                }
+
+                struct Read;
+
+                impl<'de> ::serde::de::Visitor<'de> for Read {
+                    type Value = $set;
+
+                    fn expecting(
+                        &self,
+                        f: &mut ::std::fmt::Formatter<'_>,
+                    ) -> ::std::fmt::Result {
+                        write!(f, "an object that takes `{}`", $tag)
+                    }
+
+                    fn visit_newtype_struct<E>(
+                        self,
+                        d: E,
+                    ) -> ::std::result::Result<$set, E::Error>
+                    where
+                        E: ::serde::Deserializer<'de>,
+                    {
+                        read(<::serde_json::Value as ::serde::Deserialize>::deserialize(
+                            d,
+                        )?)
+                    }
+
+                    fn visit_map<A>(self, mut access: A) -> ::std::result::Result<$set, A::Error>
+                    where
+                        A: ::serde::de::MapAccess<'de>,
+                    {
+                        let mut map = ::serde_json::Map::new();
+                        while let Some(key) = access.next_key::<::std::string::String>()? {
+                            let value: ::serde_json::Value = access.next_value()?;
+                            map.insert(key, value);
+                        }
+                        read(::serde_json::Value::Object(map))
+                    }
+
+                    fn visit_seq<A>(self, _access: A) -> ::std::result::Result<$set, A::Error>
+                    where
+                        A: ::serde::de::SeqAccess<'de>,
+                    {
+                        Err(<A::Error as ::serde::de::Error>::custom(
+                            $crate::strict::refused($tag),
+                        ))
+                    }
+                }
+
+                d.deserialize_newtype_struct(
+                    ::std::concat!("lakelands.tagged.", $tag),
+                    Read,
+                )
+            }
         }
 
         impl $crate::error::Closed for $set {
@@ -676,6 +770,9 @@ named! {
         Eof = "eof" => "cut short",
         /// A failure to read the bytes.
         Io = "io" => "an I/O failure",
+        /// A sequence where the contract takes an object: its members
+        /// are named, not given by position.
+        Positional { takes: String } = "positional" => "its members are named, not given by position: write it as an object that takes {takes}",
     }
 }
 
@@ -687,6 +784,17 @@ impl From<&serde_json::Error> for JsonFault {
             Category::Data => JsonFault::Data,
             Category::Eof => JsonFault::Eof,
             Category::Io => JsonFault::Io,
+        }
+    }
+}
+
+impl From<&crate::strict::Fault> for JsonFault {
+    fn from(fault: &crate::strict::Fault) -> JsonFault {
+        match fault {
+            crate::strict::Fault::Positional { takes } => JsonFault::Positional {
+                takes: takes.clone(),
+            },
+            crate::strict::Fault::Other(_) => JsonFault::Data,
         }
     }
 }

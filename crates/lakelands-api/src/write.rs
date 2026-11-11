@@ -1,7 +1,7 @@
 //! Writes and what they answer: authored writes, proposals, schema
 //! changes and the preflight a migration must pass.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Case, Place, Said};
 use crate::expr::Condition;
@@ -89,7 +89,7 @@ pub struct IngestOpts {
 
 /// What a write did. A writer never has to know in advance whether its
 /// write runs or waits for review; the answer says.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
     /// The write took effect.
@@ -154,6 +154,70 @@ pub(crate) fn present<'de, D: serde::Deserializer<'de>>(
     serde::Deserialize::deserialize(d).map(Some)
 }
 
+/// Read by hand, not derived: a tagged enum buffers its members before it
+/// reads them, and a member refused inside the buffer cannot say where it
+/// sits.
+impl<'de> Deserialize<'de> for Outcome {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Outcome, D::Error> {
+        use serde::de::Error as _;
+        let (code, mut map) = crate::strict::members(d, "outcome")?;
+        match code.as_str() {
+            "applied" => {
+                #[derive(Deserialize)]
+                struct Wire {
+                    position: Position,
+                    #[serde(default)]
+                    version: Option<Version>,
+                    #[serde(default)]
+                    renamed: Vec<(FieldName, FieldName)>,
+                    #[serde(default)]
+                    declared: Vec<InForce>,
+                    #[serde(default)]
+                    plan: Option<Box<Plan>>,
+                }
+                // A member there, `null` included: an executor's answer of
+                // `null` is an answer, and only an absent `output` is none.
+                let output = map.remove("output");
+                let mut set_off = serde_json::Map::new();
+                for member in ["through", "fired", "joined", "left"] {
+                    if let Some(value) = map.remove(member) {
+                        set_off.insert(member.to_owned(), value);
+                    }
+                }
+                let wire: Wire = crate::strict::at(map)?;
+                let set_off: SetOff = crate::strict::at(set_off)?;
+                Ok(Outcome::Applied {
+                    position: wire.position,
+                    version: wire.version,
+                    output,
+                    set_off,
+                    renamed: wire.renamed,
+                    declared: wire.declared,
+                    plan: wire.plan,
+                })
+            }
+            "proposed" => {
+                #[derive(Deserialize)]
+                struct Wire {
+                    position: Position,
+                    proposal: ProposalId,
+                    why: String,
+                    #[serde(default)]
+                    plan: Option<Box<Plan>>,
+                }
+                let wire: Wire = crate::strict::at(map)?;
+                Ok(Outcome::Proposed {
+                    position: wire.position,
+                    proposal: wire.proposal,
+                    why: wire.why,
+                    plan: wire.plan,
+                })
+            }
+            other => Err(D::Error::unknown_variant(other, &["applied", "proposed"])),
+        }
+    }
+}
+
 /// What a write set off: the reactions in its own append, and an external
 /// verb's recorded output. Empty, and left out of the answer, when it set
 /// off nothing, so such an answer reads as it always did
@@ -198,148 +262,151 @@ impl Outcome {
     }
 }
 
-/// A write that can be proposed instead of applied.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, tag = "write", rename_all = "snake_case")]
-pub enum ProposedWrite {
-    /// An `upsert`.
-    Upsert {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// The fields it carries.
-        patch: Patch,
-        /// Its options.
-        #[serde(default)]
-        opts: WriteOpts,
-    },
-    /// A `retire`.
-    Retire {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record's key.
-        key: RecordKey,
-        /// Its options.
-        #[serde(default)]
-        opts: WriteOpts,
-    },
-    /// A verb call.
-    Call {
-        /// The verb.
-        verb: VerbName,
-        /// The record it is called on; absent for a verb called on its
-        /// type.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<RecordKey>,
-        /// Its payload.
-        payload: Patch,
-        /// Its options.
-        #[serde(default)]
-        opts: WriteOpts,
-    },
-    /// Declarations, applied together as `apply` applies them.
-    Declare {
-        /// The declarations.
-        declarations: Vec<Declaration>,
-        /// Their plan when they were proposed, as one who reads everything
-        /// and holds no `restricted` was shown it; each reader is shown it
-        /// as its listing shows a report. The store answers it; whatever a
-        /// proposer sends is replaced
-        /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        plan: Option<Box<Plan>>,
-    },
-    /// A type's migration, as `migrate_apply` applies it, with the report
-    /// its preflight answered when it was proposed.
-    Migrate {
-        /// The migration.
-        migration: Box<Migration>,
-        /// The preflight's report at the proposal, for the reviewer. The
-        /// store answers it; whatever a proposer sends is replaced.
-        #[serde(default)]
-        report: Box<MigrationReport>,
-    },
-    /// A value type's migration, as `migrate_value_type_apply` applies it,
-    /// with the report its preflight answered when it was proposed.
-    MigrateValueType {
-        /// The new declaration.
-        to: Box<ValueTypeDecl>,
-        /// The values it renames.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        renames: Vec<(String, String)>,
-        /// The preflight's report at the proposal, for the reviewer. The
-        /// store answers it; whatever a proposer sends is replaced.
-        #[serde(default)]
-        report: Box<ValueTypeReport>,
-    },
-    /// One record's call of a function above `low` risk, which the store
-    /// proposes when a write makes it due and no caller may propose
-    /// (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
-    Compute {
-        /// The record's type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The record.
-        key: RecordKey,
-        /// The field its output fills.
-        field: FieldName,
-        /// The function.
-        function: String,
-        /// The inputs as the record holds them, by name, as a listing
-        /// shows them to its reader. The log never holds them: a value
-        /// sealed under a source's key would stay readable in the proposal
-        /// once the source is forgotten (058).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        inputs: Option<serde_json::Value>,
-        /// The call's digest on its record, which keys its output: a
-        /// decision holds for its record alone (064).
-        input: crate::event::Digest,
-    },
-    /// The calls of a function above `low` risk that a declaration or
-    /// `recompute` makes due over a type, proposed as one: its accept makes
-    /// the calls the sweep owes then, and its reject records the rejection
-    /// under each of them.
-    ComputeSweep {
-        /// The records' type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The function.
-        function: String,
-        /// How many calls it owed when proposed.
-        count: u64,
-        /// The first records it called for, in key order.
-        first: Vec<RecordKey>,
-    },
-    /// A change to the records a condition selects, whole, as `enact`
-    /// makes it: its accept enacts it against the plan its reviewer is
-    /// shown, or is refused `plan_stale`
-    /// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
-    Records {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The condition, in the expression grammar.
-        #[serde(rename = "where")]
-        filter: Condition,
-        /// What it does to each record selected.
-        to: ChangeTo,
-        /// The proposer's `only` on the type, held beside the condition.
-        /// The store answers it; whatever a proposer sends is replaced.
-        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-        only: std::collections::BTreeMap<FieldName, serde_json::Value>,
-        /// Whether restricted records are left out: so where its proposer
-        /// does not hold `restricted`. The store answers it; whatever a
-        /// proposer sends is replaced.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        skip_restricted: bool,
-        /// Its plan as its proposer was shown it. The store answers it;
-        /// whatever a proposer sends is replaced.
-        #[serde(default)]
-        plan: Box<Plan>,
-    },
+crate::tagged_enum! {
+    tag = "write", names = "snake_case", deny;
+    /// A write that can be proposed instead of applied.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields, tag = "write", rename_all = "snake_case")]
+    pub enum ProposedWrite {
+        /// An `upsert`.
+        Upsert {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// The fields it carries.
+            patch: Patch,
+            /// Its options.
+            #[serde(default)]
+            opts: WriteOpts,
+        },
+        /// A `retire`.
+        Retire {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record's key.
+            key: RecordKey,
+            /// Its options.
+            #[serde(default)]
+            opts: WriteOpts,
+        },
+        /// A verb call.
+        Call {
+            /// The verb.
+            verb: VerbName,
+            /// The record it is called on; absent for a verb called on its
+            /// type.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            key: Option<RecordKey>,
+            /// Its payload.
+            payload: Patch,
+            /// Its options.
+            #[serde(default)]
+            opts: WriteOpts,
+        },
+        /// Declarations, applied together as `apply` applies them.
+        Declare {
+            /// The declarations.
+            declarations: Vec<Declaration>,
+            /// Their plan when they were proposed, as one who reads everything
+            /// and holds no `restricted` was shown it; each reader is shown it
+            /// as its listing shows a report. The store answers it; whatever a
+            /// proposer sends is replaced
+            /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            plan: Option<Box<Plan>>,
+        },
+        /// A type's migration, as `migrate_apply` applies it, with the report
+        /// its preflight answered when it was proposed.
+        Migrate {
+            /// The migration.
+            migration: Box<Migration>,
+            /// The preflight's report at the proposal, for the reviewer. The
+            /// store answers it; whatever a proposer sends is replaced.
+            #[serde(default)]
+            report: Box<MigrationReport>,
+        },
+        /// A value type's migration, as `migrate_value_type_apply` applies it,
+        /// with the report its preflight answered when it was proposed.
+        MigrateValueType {
+            /// The new declaration.
+            to: Box<ValueTypeDecl>,
+            /// The values it renames.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            renames: Vec<(String, String)>,
+            /// The preflight's report at the proposal, for the reviewer. The
+            /// store answers it; whatever a proposer sends is replaced.
+            #[serde(default)]
+            report: Box<ValueTypeReport>,
+        },
+        /// One record's call of a function above `low` risk, which the store
+        /// proposes when a write makes it due and no caller may propose
+        /// (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
+        Compute {
+            /// The record's type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The record.
+            key: RecordKey,
+            /// The field its output fills.
+            field: FieldName,
+            /// The function.
+            function: String,
+            /// The inputs as the record holds them, by name, as a listing
+            /// shows them to its reader. The log never holds them: a value
+            /// sealed under a source's key would stay readable in the proposal
+            /// once the source is forgotten (058).
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            inputs: Option<serde_json::Value>,
+            /// The call's digest on its record, which keys its output: a
+            /// decision holds for its record alone (064).
+            input: crate::event::Digest,
+        },
+        /// The calls of a function above `low` risk that a declaration or
+        /// `recompute` makes due over a type, proposed as one: its accept makes
+        /// the calls the sweep owes then, and its reject records the rejection
+        /// under each of them.
+        ComputeSweep {
+            /// The records' type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The function.
+            function: String,
+            /// How many calls it owed when proposed.
+            count: u64,
+            /// The first records it called for, in key order.
+            first: Vec<RecordKey>,
+        },
+        /// A change to the records a condition selects, whole, as `enact`
+        /// makes it: its accept enacts it against the plan its reviewer is
+        /// shown, or is refused `plan_stale`
+        /// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+        Records {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The condition, in the expression grammar.
+            #[serde(rename = "where")]
+            filter: Condition,
+            /// What it does to each record selected.
+            to: ChangeTo,
+            /// The proposer's `only` on the type, held beside the condition.
+            /// The store answers it; whatever a proposer sends is replaced.
+            #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+            only: std::collections::BTreeMap<FieldName, serde_json::Value>,
+            /// Whether restricted records are left out: so where its proposer
+            /// does not hold `restricted`. The store answers it; whatever a
+            /// proposer sends is replaced.
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            skip_restricted: bool,
+            /// Its plan as its proposer was shown it. The store answers it;
+            /// whatever a proposer sends is replaced.
+            #[serde(default)]
+            plan: Box<Plan>,
+        },
+    }
 }
 
 impl ProposedWrite {
@@ -472,7 +539,7 @@ pub struct Proposal {
 }
 
 /// Which proposals to list.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalFilter {
     /// Only proposals in this state.
@@ -496,6 +563,48 @@ pub struct ProposalFilter {
     /// The time axes.
     #[serde(default, flatten)]
     pub at: crate::read::ReadAt,
+}
+
+/// `ProposalFilter`'s members, its time axes read as a [`ReadAt`] beside
+/// them.
+///
+/// [`ReadAt`]: crate::read::ReadAt
+impl<'de> Deserialize<'de> for ProposalFilter {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<ProposalFilter, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            #[serde(default)]
+            state: Option<ProposalState>,
+            #[serde(default, rename = "type")]
+            ty: Option<TypeName>,
+            #[serde(default)]
+            kind: Option<ProposalKind>,
+            #[serde(default)]
+            limit: Option<u32>,
+            #[serde(default)]
+            order_by: Vec<crate::read::Order>,
+            #[serde(default)]
+            cursor: Option<Cursor>,
+        }
+        let mut map = crate::strict::fields::<D::Error, D>(
+            d,
+            &[
+                "state", "type", "kind", "limit", "order_by", "cursor", "as_of", "valid_at",
+            ],
+        )?;
+        let at = crate::strict::axes(&mut map)?;
+        let wire: Wire = crate::strict::at(map)?;
+        Ok(ProposalFilter {
+            state: wire.state,
+            ty: wire.ty,
+            kind: wire.kind,
+            limit: wire.limit,
+            order_by: wire.order_by,
+            cursor: wire.cursor,
+            at,
+        })
+    }
 }
 
 /// An object set: the records of one type, or the groups of a view the
@@ -968,7 +1077,8 @@ const DECLARATION_KINDS: &[&str] = &[
 impl<'de> Deserialize<'de> for Declaration {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Declaration, D::Error> {
         use serde::de::Error as _;
-        let mut members = serde_json::Map::<String, serde_json::Value>::deserialize(d)?;
+        let value = serde_json::Value::deserialize(d)?;
+        let mut members = crate::strict::object::<D::Error>(value, "declare")?;
         let kind = match members.remove("declare") {
             Some(serde_json::Value::String(kind)) => kind,
             Some(_) => return Err(D::Error::custom("`declare` is not a string")),
@@ -982,14 +1092,14 @@ impl<'de> Deserialize<'de> for Declaration {
             .map(str::to_owned);
         let members = serde_json::Value::Object(members);
         let read = match kind.as_str() {
-            "type" => serde_path_to_error::deserialize(members).map(Declaration::Type),
-            "value_type" => serde_path_to_error::deserialize(members).map(Declaration::ValueType),
-            "verb" => serde_path_to_error::deserialize(members).map(Declaration::Verb),
-            "trigger" => serde_path_to_error::deserialize(members).map(Declaration::Trigger),
-            "object_set" => serde_path_to_error::deserialize(members).map(Declaration::ObjectSet),
-            "function" => serde_path_to_error::deserialize(members).map(Declaration::Function),
-            "setting" => serde_path_to_error::deserialize(members).map(Declaration::Setting),
-            "withdraw" => serde_path_to_error::deserialize(members).map(Declaration::Withdraw),
+            "type" => crate::strict::read(members).map(Declaration::Type),
+            "value_type" => crate::strict::read(members).map(Declaration::ValueType),
+            "verb" => crate::strict::read(members).map(Declaration::Verb),
+            "trigger" => crate::strict::read(members).map(Declaration::Trigger),
+            "object_set" => crate::strict::read(members).map(Declaration::ObjectSet),
+            "function" => crate::strict::read(members).map(Declaration::Function),
+            "setting" => crate::strict::read(members).map(Declaration::Setting),
+            "withdraw" => crate::strict::read(members).map(Declaration::Withdraw),
             other => return Err(D::Error::unknown_variant(other, DECLARATION_KINDS)),
         };
         read.map_err(|e| D::Error::custom(refusal(&kind, name.as_deref(), &e)))
@@ -1003,7 +1113,7 @@ impl<'de> Deserialize<'de> for Declaration {
 fn refusal(
     kind: &str,
     name: Option<&str>,
-    e: &serde_path_to_error::Error<serde_json::Error>,
+    e: &serde_path_to_error::Error<crate::strict::Fault>,
 ) -> String {
     let what = match name {
         Some(name) => format!("the {kind} declaration `{name}`"),
@@ -1594,67 +1704,70 @@ pub struct Unlive {
     pub sample_keys: Vec<RecordKey>,
 }
 
-/// A change to the ontology, as `plan` plans it and `enact` makes it
-/// (`docs/decisions/062-a-change-plans-before-it-acts.md`): what the doors
-/// `apply`, `add_field`, `recompute`, `migrate_apply` and
-/// `migrate_value_type_apply` each make; or a change to the records a
-/// condition selects
-/// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, tag = "change", rename_all = "snake_case")]
-pub enum Change {
-    /// Declarations, applied together as `apply` applies them.
-    Declare {
-        /// The declarations.
-        declarations: Vec<Declaration>,
-    },
-    /// One field added to a type, as `add_field` adds it.
-    AddField {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The field.
-        field: Box<FieldDecl>,
-    },
-    /// What a declaration in force computes, computed again.
-    Recompute {
-        /// What is computed again.
-        what: Recompute,
-    },
-    /// A type's migration.
-    Migrate {
-        /// The migration.
-        migration: Box<Migration>,
-    },
-    /// A value type's migration.
-    MigrateValueType {
-        /// The migration.
-        migration: Box<ValueTypeMigration>,
-    },
-    /// The same values set on, or a retirement of, every record of one
-    /// type that a condition selects, as its caller's `find` with that
-    /// condition answers them.
-    Records {
-        /// The type. On a link type, its links' own fields are set, or
-        /// the links unlinked; no end is named.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The condition, in the expression grammar.
-        #[serde(rename = "where")]
-        filter: Box<Condition>,
-        /// What it does to each record selected.
-        to: ChangeTo,
-        /// Text values a selected record's fields must hold, beside the
-        /// condition: a proposal's carries its proposer's `only`, so its
-        /// accept selects no record the proposer could not.
-        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-        only: std::collections::BTreeMap<FieldName, serde_json::Value>,
-        /// Whether restricted records are left out, beside the condition:
-        /// a proposal's is set where its proposer does not hold
-        /// `restricted`.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        skip_restricted: bool,
-    },
+crate::tagged_enum! {
+    tag = "change", names = "snake_case", deny;
+    /// A change to the ontology, as `plan` plans it and `enact` makes it
+    /// (`docs/decisions/062-a-change-plans-before-it-acts.md`): what the doors
+    /// `apply`, `add_field`, `recompute`, `migrate_apply` and
+    /// `migrate_value_type_apply` each make; or a change to the records a
+    /// condition selects
+    /// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields, tag = "change", rename_all = "snake_case")]
+    pub enum Change {
+        /// Declarations, applied together as `apply` applies them.
+        Declare {
+            /// The declarations.
+            declarations: Vec<Declaration>,
+        },
+        /// One field added to a type, as `add_field` adds it.
+        AddField {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The field.
+            field: Box<FieldDecl>,
+        },
+        /// What a declaration in force computes, computed again.
+        Recompute {
+            /// What is computed again.
+            what: Recompute,
+        },
+        /// A type's migration.
+        Migrate {
+            /// The migration.
+            migration: Box<Migration>,
+        },
+        /// A value type's migration.
+        MigrateValueType {
+            /// The migration.
+            migration: Box<ValueTypeMigration>,
+        },
+        /// The same values set on, or a retirement of, every record of one
+        /// type that a condition selects, as its caller's `find` with that
+        /// condition answers them.
+        Records {
+            /// The type. On a link type, its links' own fields are set, or
+            /// the links unlinked; no end is named.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The condition, in the expression grammar.
+            #[serde(rename = "where")]
+            filter: Box<Condition>,
+            /// What it does to each record selected.
+            to: ChangeTo,
+            /// Text values a selected record's fields must hold, beside the
+            /// condition: a proposal's carries its proposer's `only`, so its
+            /// accept selects no record the proposer could not.
+            #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+            only: std::collections::BTreeMap<FieldName, serde_json::Value>,
+            /// Whether restricted records are left out, beside the condition:
+            /// a proposal's is set where its proposer does not hold
+            /// `restricted`.
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            skip_restricted: bool,
+        },
+    }
 }
 
 /// What a change to records does to each record it selects.
