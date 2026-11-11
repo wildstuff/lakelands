@@ -729,6 +729,9 @@ catalog! {
         /// no member, holds a member the patch holds too, or is not padded
         /// base64 of at least the tag's 16 bytes.
         BoxForm => "a `record_ingested` carries `sealed` with no `box`, or a `sealed.box` names no member in `sealed.fields`, or one the patch holds too, or is not padded base64 of at least 16 bytes",
+        /// A `values_removed` whose selection is a record or a quarantined
+        /// row, which only a `values_erased` carries.
+        RemovedSelection { selection: String } => "a `values_removed` carries a `{selection}` selection, which only a `values_erased` carries: a removal selects by its source",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.

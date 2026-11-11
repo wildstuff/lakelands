@@ -213,7 +213,8 @@ struct Envelope {
 
 /// Of an event's body, its kind, the fence a `lease_taken` names, the
 /// source a `source_forgotten` forgot or a `values_removed` took from, and
-/// the versions of its key and the keys sealed apart the latter destroyed.
+/// the versions of its key and the keys sealed apart the latter, or a
+/// `values_erased`, destroyed.
 #[derive(serde::Deserialize)]
 struct Body {
     kind: String,
@@ -348,6 +349,7 @@ fn scan(
 ) -> Result<(Vec<Digest>, Needed)> {
     let (mut sealed, mut forgot, mut shredded) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    let mut erased = BTreeSet::new();
     let mut fence = 0;
     let mut digests = Vec::with_capacity(files.len());
     for path in files {
@@ -389,6 +391,11 @@ fn scan(
                 let taken = (event.body.keys.iter()).chain(&event.body.apart);
                 shredded.extend(taken.map(|k| (source.clone(), k.clone())));
             }
+            // An erase names no source: the apart keys it destroyed are
+            // the delivery's own (115).
+            if event.body.kind == "values_erased" {
+                erased.extend(event.body.apart.iter().cloned());
+            }
             // PostgreSQL keeps an id as its 16 bytes (086); a log another
             // writer made may hold one of another form.
             if !event.id.of_form() {
@@ -412,7 +419,7 @@ fn scan(
         !forgot.contains(s)
             && !ks
                 .iter()
-                .any(|k| shredded.contains(&(s.clone(), k.clone())))
+                .any(|k| erased.contains(k) || shredded.contains(&(s.clone(), k.clone())))
     };
     let needed: BTreeSet<_> = (sealed.into_iter().filter(kept))
         .flat_map(|(s, ks)| ks.into_iter().map(move |k| (s.clone(), k)))

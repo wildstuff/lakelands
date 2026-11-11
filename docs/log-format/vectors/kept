@@ -2,3 +2,4 @@
 # on. Each is kept as the tag that shipped it holds it, byte for byte, and
 # never edited (`scripts/gates/vectors-kept.sh`):
 # <format> <tag> <its path at the tag>.
+23 v0.23.0 docs/log-format/vectors/23

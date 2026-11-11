@@ -24,6 +24,7 @@ mod build;
 mod choose;
 mod declare;
 mod doors;
+mod erase;
 mod exec;
 mod forget;
 mod import;

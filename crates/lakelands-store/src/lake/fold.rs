@@ -767,19 +767,21 @@ impl Lake {
             }
             // The act is owed until a rebuild that knew it before it began
             // has folded the log, and the reclaim ran (065).
-            EventBody::ValuesRemoved { .. } => {
+            // An erase is such an act, whose chain is read here (115).
+            EventBody::ValuesRemoved { .. } | EventBody::ValuesErased { .. } => {
                 self.act_at(e.position, e.known_at);
                 let act = crate::remove::Removal::of(e).expect("the event is an act");
                 let known = w.removals.contains(&act) && !w.ahead.remove(&act.at);
                 // Its versions destroyed, as forgetting's keys must be: a
                 // rebuild before the destroy leaves it owed.
-                let ids = match act.keys.is_empty() {
-                    true => Vec::new(),
-                    false => self.keys.ids(&act.source)?,
+                let ids = match (&act.source, act.keys.is_empty()) {
+                    (Some(source), false) => self.keys.ids(source)?,
+                    _ => Vec::new(),
                 };
                 let mut destroyed = !act.keys.iter().any(|k| ids.contains(k));
-                for k in &act.apart {
-                    destroyed = destroyed && !self.keys.holds(&act.source, k)?;
+                for (k, source) in act.apart.iter().zip(std::iter::repeat(&act.source)) {
+                    let held = source.as_ref().map(|s| self.keys.holds(s, k)).transpose()?;
+                    destroyed = destroyed && held != Some(true);
                 }
                 // One met untold fixes what identifies records here, as a
                 // rebuild would be told it (lakelands#1228).
@@ -790,7 +792,12 @@ impl Lake {
                         None => renames_in(view.output(RENAMES, &key.1)?.map(|(_, l)| l))?,
                     };
                     let fixed = crate::remove::Fixed::of(&w.ontology, &renames, act.at);
-                    w.removals.push(crate::remove::Removal { fixed, ..act });
+                    let chain = crate::remove::chain(self, view, &act)?;
+                    w.removals.push(crate::remove::Removal {
+                        fixed,
+                        chain,
+                        ..act
+                    });
                 }
                 let mut list = crate::remove::removed_list(view, staged)?;
                 let state = if known && w.rebuilding && destroyed {

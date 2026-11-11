@@ -867,6 +867,48 @@ fn removed_field() -> lakelands_api::write::RemovedField {
     }
 }
 
+/// A record selection with its field, every member given.
+fn record_selection() -> lakelands_api::write::Selection {
+    lakelands_api::write::Selection::Record {
+        ty: "ord".into(),
+        key: "o1".into(),
+        field: Some("note".into()),
+    }
+}
+
+/// A quarantined row's id.
+fn quarantine_id() -> lakelands_api::quarantine::QuarantineId {
+    lakelands_api::quarantine::QuarantineId {
+        source: "erp".into(),
+        delivery: "d".into(),
+        index: 0,
+    }
+}
+
+/// An erase's report, every member given, so a member the WIT lacks is
+/// named.
+fn erase_report() -> lakelands_api::write::EraseReport {
+    lakelands_api::write::EraseReport {
+        selection: record_selection(),
+        types: vec![forget_records()],
+        fields: vec![removed_field()],
+        versions: 2,
+        keys: vec!["k1".into()],
+        apart: vec!["a1".into()],
+        kept: vec![forget_records()],
+        references: vec![purge_reference()],
+        unshredded: 1,
+        recomputed: vec![record_field()],
+        views: vec!["v".into()],
+        breaches: vec![breach()],
+        log_events: 9,
+        position: Position(3),
+        report_id: "r".into(),
+        quarantined: Some(quarantine_id()),
+        sources: vec!["erp".into()],
+    }
+}
+
 /// A removal's report, every member given, so a member the WIT lacks
 /// is named.
 fn remove_report() -> lakelands_api::write::RemoveReport {
@@ -1816,6 +1858,14 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ),
         ("forget_way", members(&forget_way())),
         ("remove_report", members(&remove_report())),
+        ("erase_report", members(&erase_report())),
+        (
+            "record_selection",
+            match serde_json::to_value(record_selection()).expect("serialises") {
+                Value::Object(m) => members(&m["record"]),
+                other => panic!("{other} is not a record selection"),
+            },
+        ),
         ("removed_field", members(&removed_field())),
         ("forget_records", members(&forget_records())),
         ("forget_field", members(&forget_field())),
@@ -2027,7 +2077,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Selection::WrittenBefore(_)
                 | Selection::Delivery(_)
                 | Selection::SeenBefore(_)
-                | Selection::Deliveries(_) => {}
+                | Selection::Deliveries(_)
+                | Selection::Record { .. }
+                | Selection::Quarantined(_) => {}
             }
         }
         let _ = guard;
@@ -2037,6 +2089,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             Selection::Delivery("d".into()),
             Selection::SeenBefore(t),
             Selection::Deliveries(Vec::new()),
+            record_selection(),
+            Selection::Quarantined(quarantine_id()),
         ];
         checks.push(("selection", case_names(&all, None)));
     }

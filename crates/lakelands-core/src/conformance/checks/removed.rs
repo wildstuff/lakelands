@@ -131,7 +131,7 @@ check!(
 /// `note` an author's, `twice` derived from `duration`, the admitting
 /// constraints `timed` and `doubled`, over `duration` and `twice`, and the
 /// kept view `by_duration`.
-async fn visits(l: &Lake) -> Held {
+pub(super) async fn visits(l: &Lake) -> Held {
     let text = json!({"kind": "text"});
     let number = json!({"kind": "number"});
     l.declare_json(
@@ -158,7 +158,7 @@ async fn visits(l: &Lake) -> Held {
 }
 
 /// `tracker`'s visits `keys`, each with `duration`.
-async fn tracked(l: &Lake, visits: &[(&str, u32)]) -> Held {
+pub(super) async fn tracked(l: &Lake, visits: &[(&str, u32)]) -> Held {
     let records = (visits.iter())
         .map(|(k, d)| source_record("visit", k, json!({"id": k, "duration": d})))
         .collect();

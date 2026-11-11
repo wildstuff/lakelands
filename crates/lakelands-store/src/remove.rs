@@ -71,7 +71,9 @@ pub(crate) fn removed_at() -> Digest {
 pub(crate) struct Removal {
     /// Only events before it are selected.
     pub at: Position,
-    pub source: SourceId,
+    /// The source whose keys it destroys: a removal's, a quarantined
+    /// entry's for an erase of it; none for an erase of a record (115).
+    pub source: Option<SourceId>,
     pub selection: Selection,
     pub before: Option<Position>,
     /// The versions of the source's key it destroyed.
@@ -81,7 +83,13 @@ pub(crate) struct Removal {
     /// What identifies records at it, where the fold was told it
     /// ([`told`]).
     pub fixed: Fixed,
+    /// For an erase of a record, the names it bore before the act, the
+    /// latest first, each from the position it holds from ([`told`]).
+    pub chain: Option<Vec<Link>>,
 }
+
+/// A record's type and key from a position on, up to the next link.
+pub(crate) type Link = (Position, TypeName, RecordKey);
 
 impl PartialEq for Removal {
     /// One act is its event, at its position: what it fixes is read with it.
@@ -114,18 +122,29 @@ impl Fixed {
 }
 
 impl Removal {
+    /// The act `e` is: a `values_removed` or a `values_erased` (115).
     pub(crate) fn of(e: &Event) -> Option<Removal> {
-        let EventBody::ValuesRemoved {
-            source,
-            selection,
-            before,
-            keys,
-            apart,
-        } = &e.body
-        else {
-            return None;
+        let (source, selection, before, keys, apart) = match &e.body {
+            EventBody::ValuesRemoved {
+                source,
+                selection,
+                before,
+                keys,
+                apart,
+            } => (
+                Some(source.clone()),
+                settled(selection.clone()),
+                *before,
+                keys,
+                apart,
+            ),
+            EventBody::ValuesErased {
+                selection,
+                keys,
+                apart,
+            } => (owner(selection), selection.clone(), None, keys, apart),
+            _ => return None,
         };
-        let (source, selection, before) = (source.clone(), settled(selection.clone()), *before);
         Some(Removal {
             at: e.position,
             source,
@@ -134,14 +153,31 @@ impl Removal {
             keys: keys.clone(),
             apart: apart.clone(),
             fixed: Fixed::default(),
+            chain: None,
         })
+    }
+
+    /// Whether it is an erase (115), not a removal.
+    pub(crate) fn erases(&self) -> bool {
+        matches!(
+            self.selection,
+            Selection::Record { .. } | Selection::Quarantined(_)
+        )
+    }
+
+    /// Whether it erases the record of `ty` at `key` as an event at `at`
+    /// names it: a link of its chain.
+    pub(crate) fn names(&self, at: Position, ty: &TypeName, key: &RecordKey) -> bool {
+        let link = (self.chain.iter().flatten()).find(|(from, ..)| *from <= at);
+        at < self.at && link.is_some_and(|(_, t, k)| t == ty && k == key)
     }
 
     /// Whether it destroyed `source`'s key `key`, a version or a
     /// delivery's sealed apart: a value sealed under it, missing from the
     /// key store, is erased, not lost.
     pub(crate) fn destroyed(&self, source: &SourceId, key: &KeyId) -> bool {
-        &self.source == source && (self.keys.contains(key) || self.apart.contains(key))
+        self.source.as_ref() == Some(source)
+            && (self.keys.contains(key) || self.apart.contains(key))
     }
 
     /// Whether it selects `e`: a `record_ingested` of its source before
@@ -151,30 +187,32 @@ impl Removal {
     /// A quarantined record's version is selected so too, read
     /// [`crate::sealing::lifted`] (085).
     pub(crate) fn selects(&self, e: &Event) -> bool {
-        let ingested = matches!(
-            e.body,
-            EventBody::RecordIngested { .. } | EventBody::RecordQuarantined { .. }
-        );
-        let picked = || match &self.selection {
-            Selection::WrittenBefore(_) => self.before.is_some_and(|b| e.position < b),
-            Selection::Delivery(d) => e.delivery.as_ref() == Some(d),
-            Selection::Deliveries(ds) => {
-                (e.delivery.as_ref()).is_some_and(|d| ds.binary_search(d).is_ok())
+        match (&self.selection, &e.body) {
+            (
+                Selection::Record { .. },
+                EventBody::RecordUpserted { ty, key, .. }
+                | EventBody::RecordIngested { ty, key, .. },
+            ) => self.names(e.position, ty, key),
+            (Selection::Quarantined(id), EventBody::RecordQuarantined { id: of, .. }) => {
+                e.position < self.at && of == id
             }
-            // A quarantined record states its `seen_at` in its payload.
-            Selection::SeenBefore(t) => match &e.body {
-                EventBody::RecordQuarantined { seen_at, .. } => *seen_at,
-                _ => e.seen_at,
+            (Selection::Record { .. } | Selection::Quarantined(_), _) => false,
+            (selection, _) => {
+                (self.source.as_ref()).is_some_and(|s| picks(s, selection, self.before, self.at, e))
             }
-            .is_some_and(|s| s < *t),
-        };
-        ingested && e.position < self.at && e.source.as_ref() == Some(&self.source) && picked()
+        }
     }
 
     /// Whether it takes the value of `field` of `ty` an event at `at`
     /// wrote: one that identifies no record at the act either.
-    fn takes(&self, at: Position, ty: &TypeName, field: &FieldName) -> bool {
-        !(self.fixed.fields).contains(&named_now(&self.fixed.renames, at, ty, field))
+    /// An erase of one field takes that field's alone (115).
+    pub(crate) fn takes(&self, at: Position, ty: &TypeName, field: &FieldName) -> bool {
+        let now = named_now(&self.fixed.renames, at, ty, field);
+        let one = match &self.selection {
+            Selection::Record { field: Some(f), .. } => &now.1 == f,
+            _ => true,
+        };
+        one && !(self.fixed.fields).contains(&now)
     }
 }
 
@@ -183,6 +221,16 @@ impl Removal {
 pub(crate) fn takeable(decl: &TypeDecl, f: &FieldName) -> bool {
     let field = decl.field(f);
     !decl.key.contains(f) && field.is_some_and(|d| d.ty.target.is_none())
+}
+
+/// Whose keys an erase of `selection` destroys: a quarantined entry's
+/// source's, which sealed its versions; a record's values are many
+/// sources' and the hosts', so an erase of one destroys none (115).
+pub(crate) fn owner(selection: &Selection) -> Option<SourceId> {
+    match selection {
+        Selection::Quarantined(id) => Some(id.source.clone()),
+        _ => None,
+    }
 }
 
 /// `e` with each value the acts `removals` select cleared, and the
@@ -203,7 +251,9 @@ pub(crate) fn redacted(
         let cleared = std::mem::take(cells).into_keys().collect();
         return Some((plain, cleared));
     }
-    let EventBody::RecordIngested { ty, patch, .. } = &mut plain.body else {
+    let (EventBody::RecordIngested { ty, patch, .. } | EventBody::RecordUpserted { ty, patch, .. }) =
+        &mut plain.body
+    else {
         return None;
     };
     let decl = ontology.ty(ty).ok()?;
@@ -265,8 +315,23 @@ pub(crate) fn told(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Removal
     for act in &mut acts {
         let then = Ontology::at(lake.engine.view(Some(act.at))?.as_ref())?;
         act.fixed = Fixed::of(&then, &renames, act.at);
+        act.chain = chain(lake, view, act)?;
     }
     Ok(acts)
+}
+
+/// For an erase of a record, the names it bore before `act`, read up to
+/// the head of `view` (115).
+pub(crate) fn chain(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+    act: &Removal,
+) -> Result<Option<Vec<Link>>> {
+    let Selection::Record { ty, key, .. } = &act.selection else {
+        return Ok(None);
+    };
+    let history = crate::forget::History::new(lake, view)?;
+    Ok(Some(history.chain(ty, key, act.at)))
 }
 
 /// Whether `e` is what the selection of `source` takes at `at`: the
@@ -294,13 +359,15 @@ fn picks(
             _ => e.seen_at,
         }
         .is_some_and(|s| s < *t),
+        // An erase selects by no source (115).
+        Selection::Record { .. } | Selection::Quarantined(_) => false,
     };
     ingested && e.position < at && e.source.as_ref() == Some(source) && picked()
 }
 
 /// The versions and the keys of deliveries sealed apart that sealed a
 /// value, the version first.
-fn keys_of(s: &lakelands_api::event::Sealed) -> Vec<(bool, KeyId)> {
+pub(crate) fn keys_of(s: &lakelands_api::event::Sealed) -> Vec<(bool, KeyId)> {
     let apart = s.apart.iter().map(|k| (true, k.clone()));
     std::iter::once((false, s.key.clone()))
         .chain(apart)
@@ -354,7 +421,7 @@ impl Gathered {
                     None => Position::GENESIS,
                 },
             ),
-            Selection::Delivery(_) | Selection::Deliveries(_) | Selection::SeenBefore(_) => None,
+            _ => None,
         };
         let mut g = Gathered {
             source: source.clone(),
@@ -860,6 +927,9 @@ pub(crate) fn checked(selection: &Selection) -> Result<Selection> {
             let value = t.to_string();
             Err(Error::invalid(Case::NotDateTime { value }))
         }
+        Selection::Record { .. } | Selection::Quarantined(_) => {
+            Err(Error::invalid(Case::RemoveErases))
+        }
         _ => Ok(settled(selection.clone())),
     }
 }
@@ -899,10 +969,11 @@ pub(crate) fn whole_from(
             if e.position > head {
                 return Ok(false);
             }
-            if let EventBody::ActWhole { act } = e.body
-                && act == at
-            {
-                return Ok(true);
+            match e.body {
+                EventBody::ActWhole { act } if act == at => return Ok(true),
+                // An erase is one event: it is whole where it stands (115).
+                EventBody::ValuesErased { .. } if e.position == at => return Ok(true),
+                _ => {}
             }
         }
     }
@@ -1032,11 +1103,15 @@ pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn
         let Some(state) = list.get(&act.at) else {
             continue;
         };
+        // An erase is one event, whole as it lands (115).
+        let Some(source) = act.source.clone().filter(|_| !act.erases()) else {
+            continue;
+        };
         if state == "done" || whole(lake, act.at, head)? {
             continue;
         }
         owing.push(Box::new(Remove {
-            source: act.source.clone(),
+            source,
             selection: act.selection.clone(),
             shredded: false,
             report_id: None,
@@ -1303,7 +1378,7 @@ impl Remove {
     fn owing(&self, all: &[Removal], view: &dyn ProjectionView) -> Result<Option<Position>> {
         let list = removed_list(view, &Staged::default())?;
         for act in all {
-            if act.source != self.source || act.selection != self.selection {
+            if act.source.as_ref() != Some(&self.source) || act.selection != self.selection {
                 continue;
             }
             // An act the list does not call done is taken up: one between
@@ -1468,12 +1543,13 @@ impl Remove {
         };
         Removal {
             at,
-            source: self.source.clone(),
+            source: Some(self.source.clone()),
             selection: self.selection.clone(),
             before,
             keys: self.keys.clone(),
             apart: self.apart.clone(),
             fixed: Fixed::default(),
+            chain: None,
         }
     }
 

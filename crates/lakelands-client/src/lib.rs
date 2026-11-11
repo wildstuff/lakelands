@@ -348,6 +348,16 @@ impl LakeStore for RemoteLake {
         Err(host_only("remove_values_preflight"))
     }
 
+    async fn erase_values(
+        &self,
+        _selection: &Selection,
+        _shredded: bool,
+        _id: Option<&str>,
+        _preflight: bool,
+    ) -> Result<lakelands_api::write::EraseReport> {
+        Err(host_only("erase_values"))
+    }
+
     async fn position_at(&self, _known_at: Timestamp) -> Result<Option<Position>> {
         Err(host_only("position_at"))
     }

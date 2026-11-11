@@ -880,7 +880,7 @@ fn every_kind_has_the_code_the_projections_store() {
     let kinds = lakelands_api::event::KINDS.iter().copied();
     let listed: Vec<_> = kinds.zip((1..).filter(|code| *code != 2)).collect();
     assert_eq!(codes, listed, "the codes follow the format's order, from 1");
-    assert_eq!(kind_code("checkpoint"), Some(22));
+    assert_eq!(kind_code("checkpoint"), Some(23));
     assert_eq!(kind_code("lake_created"), Some(1));
     assert_eq!(kind_code("a_newer_kind"), None);
 }

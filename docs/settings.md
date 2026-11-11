@@ -76,6 +76,13 @@ The zone the lake's calendar day is read in: `today()` in an expression, and the
 - **Takes:** a time zone as the IANA time-zone database names it, as `Europe/Berlin`.
 - **Default:** `"UTC"`.
 
+### `erase_on_close`
+
+Has every ordinary close of a quarantined entry — landed, resubmitted or dismissed — erase the entry's cells in the same append, a `values_erased` written `system:lakelands` beside the close.
+
+- **Takes:** `true` or `false`.
+- **Default:** `false`.
+
 ## Kept in the lake's location
 
 A member of `lakes/<id>.json`, read when the lake is opened: a bound on what one host spends, which changes no answer. Edit the file and open the lake again.

@@ -1192,6 +1192,31 @@ belongs in the suite, not beside one engine:
 - `an_act_reclaims_in_turns_and_says_what_came_back` — 099, R6 (lakelands#1649): an act's reclaim asks the engine for no whole compaction, a full `VACUUM` where it has one: a scoped forgetting answers what came back in `reclaimed`, its storage before and after measured together or neither, and owes nothing, and the lake answers as a rebuild does; `compact` still asks for the whole compaction
 - `a_write_beside_the_walk_is_judged_at_the_first_turn` — 099 (lakelands#1649): an act's first turn reads, under the writer, only the tail its catch-up left, sought by type where the act names more keys than the tail holds positions, and judges again the records it touched: `erp` writes the city of one of 40 records `crm` alone brought, held at the writer while a removal of every `crm` write walks and let go once the act's first turn queues behind it, and the removal keeps that record with `erp`'s city and retires the other 39; the same write on one of `web`'s 40 records beside a forgetting of `web` leaves the record co-owned, with `erp`'s city and `web`'s name erased, and retires the other 39; and a dismissal of `ops`' quarantined record, its own source's event in the removal of `ops`' writes' tail, is not carried: the walk's count of a quarantined record is not kept, and the record stays dismissed where its tail closed it
 
+**erase**
+
+- `an_erase_by_record_erases_it_at_every_position` — 115: an erase by record erases every value of the record, authored and sourced, and no read returns one at the head or at an earlier position
+- `an_erase_by_field_leaves_the_other_values` — 115: an erase by field erases that field's values and leaves the record's other values standing
+- `keys_and_references_are_never_taken` — 115: the key field and a reference field are never taken, still read, and the type is counted in `kept`
+- `an_erase_takes_every_hands_values` — 115: an erase takes an authored and a sourced value of the same record; `remove_values` still takes only its source's
+- `an_erased_record_stays_live` — 115: a record left holding no erasable value stays live and reads with its values erased and its provenance kept
+- `an_erase_of_nothing_appends_nothing` — 115: an erase that would take nothing appends nothing, leaves the head where it was and says so
+- `an_erase_by_quarantine_id_closes_it_removed` — 115: an erase by quarantine id appends one `values_erased` and closes the open entry `removed` in the same append
+- `erasing_a_closed_entry_appends_no_close` — 115: erasing a dismissed entry appends `values_erased` alone and the entry keeps its first close
+- `require_shredded_refuses_a_plaintext_value` — 115: `require_shredded` refuses an erase while a value is plaintext, as `erase_not_shredded` naming the count the report lists in `unshredded`, and appends nothing
+- `an_apart_key_is_destroyed` — 115: erasing a quarantined row its delivery sealed apart destroys that delivery's apart key, the report naming it, and the export still imports
+- `remove_values_refuses_the_new_selections` — 115: `remove_values` refuses a record and a quarantined selection as `remove_erases`, naming `erase_values`, and appends nothing
+- `a_dismiss_erases_with_the_setting_on` — 115: with `erase_on_close` set, a dismiss appends `quarantine_closed` and then `values_erased` of the id
+- `a_landing_erases_only_with_the_setting_on` — 115: with `erase_on_close` set, a close by landing erases the quarantined copy in the same append; with it unset, the close erases nothing
+- `export_import_and_reopen_answer_the_erased_values` — 115: an export, its import and the lake opened again answer the same erased values as the lake
+- `an_export_with_values_erased_verifies` — 115: a verifier of an export holding `values_erased` answers it whole
+- `the_report_names_the_sources` — 115: the report names each source that wrote a value of the erased record, and no author
+- `a_values_removed_of_a_record_is_damage` — 115: a `values_removed` whose selection is a record, its hash made right, is refused as damage by a verifier and by an import
+- `an_erase_follows_the_records_keys_back` — 115: an erase by record follows the record backwards through a re-keying and erases the writes made at the key it held before
+- `a_taken_key_ends_the_chain` — 115: a key another record took after a re-keying ends the chain: that record's writes are not selected and still read
+- `a_sys_type_is_not_erased` — 115: a selection of a `sys.` type is refused as `not_found`, as an unknown type is, and the head does not move
+- `a_preflight_appends_nothing` — 115: a preflight appends nothing, leaves the head where it was and answers the counts the act answers; the act under its report id runs
+- `a_resubmission_erases_as_the_system` — 115: with `erase_on_close` set, a resubmission by a holder who may write and ingest and is not the erase's caller closes and erases in its append, the erase written by the system; with it unset, nothing is erased
+
 **removed**
 
 - `a_sources_values_before_a_time_read_as_erased_at_every_position` — 065: `remove_values_preflight` of what `tracker` wrote before the first event of the second day names the events selected and the first position it does not reach, the records holding a value it takes, the values per field, the two records `tracker` alone wrote as retired, the one with an author's `note` as kept, and not one an author retired and another source made again with nothing but its key, the derived field and the kept view computed again, the record left breaking an admitting constraint over the taken field and one over the field derived from it, and the `tour` whose reference names a record it retires, said as left naming a retired one; `remove_values` with that report appends one `values_removed`, the two retirements and one `act_whole`, and names that `tour` as its preflight did; after it the record made again stays, a record `web` also wrote a value on before the cut is kept, not retired, and keeps `web`'s value, which is not `tracker`'s and so not taken, a reference `tracker` wrote stays, as a field that identifies a record, the kept view counts what is left, and the report says what is computed again; the kept record holds its `note` and no `duration` nor what is derived from it, its provenance saying `erased` and naming `tracker`, at the head and `as_of` before the act, the second day's records keep theirs, and a rebuild answers the same; a field that is not erasable is taken all the same; a report under an id whose head a write moved past is taken: a write elsewhere since leaves its id good, and a time past the year 9999 is refused; a repeat appends nothing, and a selection of nothing appends nothing; a field declared `required` that the act leaves empty is listed among the breaches, naming the field, and said, and the act is not refused for it, though the author's next write of that record is
@@ -1524,7 +1549,7 @@ belongs in the suite, not beside one engine:
 
 **kept lake**
 
-- `the_lake_of_format_23_is_read_as_it_answered` — 054: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: its head and the position and kind of every event, every live record of each type it names with its fields and its stranded mark, the group `daily` kept past a thinning with its roll-up standing and its record naming a copy of the time-zone database as the one that cut it, and a person a removal left holding a source's value with another's erased, with its provenance; and a writer that opens it and rebuilds its log answers its records so again
+- `the_lake_of_format_23_is_refused` — 054, 115: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, kept as its bytes, is refused by a verifier of its export and by an import on this engine as `log_format`, naming the lake, format 23 and the one format this release reads and writes; nothing of it is read and nothing upgraded
 
 **series builds**
 

@@ -747,6 +747,12 @@ pub const VIEW_KEPT_SETTING: &str = "view_kept.";
 /// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
 pub const ZONE_SETTING: &str = "zone";
 
+/// The key of the setting that has every ordinary close of a quarantined
+/// entry erase its values in the same append, a `values_erased` beside the
+/// `quarantine_closed`; it holds when its value is `true`
+/// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+pub const ERASE_ON_CLOSE_SETTING: &str = "erase_on_close";
+
 /// The zone a `zone` setting of this value names: its text, else
 /// [`crate::expr::zone::UTC`].
 pub fn zone(value: Option<&Value>) -> &str {

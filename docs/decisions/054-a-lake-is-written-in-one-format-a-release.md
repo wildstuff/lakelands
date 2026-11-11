@@ -349,3 +349,7 @@ them.
   refused its projection's layout and advised a rebuild that cut that
   append (lakelands#1477).
 - Amended by 098 (lakelands#1652), proposed for 0.23.0.
+- Amended by 115 (lakelands#1736), proposed for 0.24.0: its step to 24
+  raises the oldest format read with it, so no format before 24 is read.
+  `docs/log-format/lakes/23/` stays as its bytes, and every engine
+  refuses it as `log_format`, as an older lake is refused.

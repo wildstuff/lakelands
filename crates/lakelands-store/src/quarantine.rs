@@ -275,7 +275,42 @@ impl Lake {
     /// its last version (085). The store's own record events close
     /// nothing; nor is a record closed twice, by one append or by the
     /// appends of one batch.
-    pub(crate) fn closing(&self, w: &mut Writer, mut drafts: Vec<Draft>) -> Result<Vec<Draft>> {
+    pub(crate) fn closing(&self, w: &mut Writer, drafts: Vec<Draft>) -> Result<Vec<Draft>> {
+        let drafts = self.closing_landed(w, drafts)?;
+        let on = w.settings.get(lakelands_api::seam::ERASE_ON_CLOSE_SETTING);
+        if on != Some(&serde_json::Value::Bool(true)) {
+            return Ok(drafts);
+        }
+        // Each ordinary close is followed by the erase of its entry's cells,
+        // in the same append (115). A close `removed` is an act's, whose
+        // erase is the act.
+        let mut out = Vec::with_capacity(drafts.len());
+        for d in drafts {
+            let erase = match &d.body {
+                EventBody::QuarantineClosed { id, why, .. } if *why != ClosedWhy::Removed => {
+                    Some((d.known_at, id.clone()))
+                }
+                _ => None,
+            };
+            out.push(d);
+            if let Some((now, id)) = erase {
+                self.erased
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let selection = lakelands_api::write::Selection::Quarantined(id);
+                let (keys, apart) = (Vec::new(), Vec::new());
+                let body = EventBody::ValuesErased {
+                    selection,
+                    keys,
+                    apart,
+                };
+                out.push(Draft::system(now, body));
+            }
+        }
+        Ok(out)
+    }
+
+    /// `drafts` with the closes as landed of [`Self::closing`].
+    fn closing_landed(&self, w: &mut Writer, mut drafts: Vec<Draft>) -> Result<Vec<Draft>> {
         if w.staged.is_none() {
             w.closing.clear();
         }
