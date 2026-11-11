@@ -1587,6 +1587,7 @@ interface types {
     record proposals-reply { position: position, data: list<proposal> }
     record migration-report-reply { position: position, data: migration-report }
     record thin-reply { position: position, data: thin-report }
+    record judge-reply { position: position, data: judge-report }
 
     /// What a change to the ontology would do, before it does it (062).
     record plan {
@@ -1723,6 +1724,8 @@ interface types {
         function(string),
         proposal(proposal-id),
         quarantined(quarantine-id),
+        /// A constraint of the type, among those its caller is shown (113).
+        constraint(constraint-name),
     }
 
     /// A quarantined record's id: its source, the delivery that first
@@ -2056,6 +2059,78 @@ interface types {
         records: u64,
         through: position,
         reclaimed: option<compact-report>,
+    }
+
+    /// A judgement asked of one type's rules (113): the records, the
+    /// rules, and the read's axes and clock a stored record is read and
+    /// judged at; a candidate is judged at the store's clock.
+    record judge {
+        subject: subject,
+        rules: rules,
+        at: read-at,
+    }
+
+    /// The records a judge judges, of one kind per call; keys and
+    /// candidates together are at most the lake's `max-limit`.
+    variant subject {
+        /// Stored records of the type, by key; a key it does not hold is
+        /// refused `not-found`.
+        keys(list<record-key>),
+        /// Records not stored, judged as the ingest window judges them;
+        /// each is of the call's type.
+        candidates(list<source-record>),
+    }
+
+    /// The rules a judge judges: the type's constraints the caller is
+    /// shown, or those of them it names (absent, every one); or one
+    /// condition it proposes, declaring nothing.
+    variant rules {
+        declared(option<list<constraint-name>>),
+        proposed(proposed-rule),
+    }
+
+    /// A condition a judge is asked of, checked where a constraint is and
+    /// answered under `name`.
+    record proposed-rule {
+        name: constraint-name,
+        holds: condition,
+    }
+
+    /// What the rules say: every record in the subject's order, and every
+    /// rule not judged whole. A rule may be in both: read them together.
+    record judge-report {
+        records: list<judged-record>,
+        unjudged: list<unjudged>,
+    }
+
+    /// What the rules say of one record: every refusal a write of it
+    /// would give in the part judged; empty, it breaks nothing judged.
+    record judged-record {
+        index: u32,
+        key: record-key,
+        refusals: list<refusal>,
+    }
+
+    /// A rule not judged whole, and why.
+    record unjudged {
+        constraint: constraint-name,
+        why: unjudged-why,
+    }
+
+    /// Why a rule was not judged whole.
+    variant unjudged-why {
+        /// Over stored records it reads what only the write that wrote
+        /// them decided, and no read judges that part.
+        the-write-alone,
+        /// The evaluator answered a case over the record at `index`.
+        unevaluable(unevaluable),
+    }
+
+    /// The record a rule could not be evaluated over, and the case the
+    /// evaluator answered, said at no place.
+    record unevaluable {
+        index: u32,
+        case: said,
     }
 
     /// A field of a type.

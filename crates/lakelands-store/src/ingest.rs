@@ -59,7 +59,7 @@ use crate::log::{self, Draft};
 use crate::purge::made_by;
 use crate::quarantine::{close_of, landing, there};
 use crate::sealing::turns;
-use crate::writes::{Call, Decide};
+use crate::writes::{Call, Decide, Hold, RecordPlan};
 use lakelands_core::{canonical, links};
 
 /// How long a window waits for more records after its first.
@@ -72,6 +72,13 @@ pub type Apart = std::sync::Mutex<BTreeMap<Pair, KeyId>>;
 
 /// A source and the delivery a record names, none for the call's.
 type Pair = (SourceId, Option<DeliveryId>);
+
+/// The sources forgotten, which write nothing (058).
+type Forgotten = BTreeMap<SourceId, String>;
+
+/// What a record is judged against: the lake, its writer, the view, and
+/// the sources forgotten.
+type Had<'h> = (&'h Lake, &'h Writer, &'h dyn ProjectionView, &'h Forgotten);
 
 /// The record's own source, else the call's, and the delivery it names.
 fn pair_of(r: &SourceRecord, source: &SourceId) -> Pair {
@@ -412,130 +419,32 @@ fn judge(
         let host = quarantine.and_then(|a| a.host);
         let judged = host.map(|e| gate(&d, r, source, &forgotten).and(Err(e.clone())));
         let judged = judged.unwrap_or_else(|| {
-            let decl = d.at.sight.ty(&r.ty)?;
-            crate::writes::untold_setting(&d.at.sight, decl, &r.key)?;
-            d.envelope.source = Some(source.clone());
-            // The key's form before the door, as `upsert` checks it. Then the
-            // door: a patch that carries a field the source is not the
-            // authority on, nor admitted to, is refused whole, even when that
-            // field's value is the one already stored.
-            let patch = d.checked(decl, &r.key, &r.fields)?;
-            if let Some(own) = &r.source {
-                crate::writes::check_source(own)?;
-            }
-            if let Some(own) = &r.delivery {
-                crate::writes::check_delivery(own)?;
-            }
-            stated(r)?;
-            // A record a holder of `only` is not admitted is, to it, a key that
-            // is free: it is not compared, and the write is refused as on a
-            // free key with another's owner (051).
-            let t = d.target(decl, &r.key)?;
-            // A link type no relation carries, its relation renamed or
-            // removed, stays declared for its history and takes no link.
-            let types = w.ontology.types.values().map(|e| &e.decl);
-            let relation = (links::is_link_type(&r.ty)).then(|| links::relation_of(types, &r.ty));
-            if let Some(None) = relation {
-                let ty = r.ty.clone();
-                return Err(Error::invalid(Case::UnclaimedLinkType { ty }));
-            }
-            let other = t.own().is_none() && t.before.is_some();
-            let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
-            if forgotten.contains_key(source) {
-                let source = source.clone();
-                return Err(Error::invalid(Case::SourceForgotten { source }));
-            }
-            // Its values of an erasable field enter the log sealed under its
-            // key, in one box, and its id is the patch's and the box's as
-            // stored: no digest of a plaintext value enters the log (058, 083).
-            let sealed = sealing((lake, w, view, now), apart, &pair, (decl, &patch))?;
-            let id = match &sealed {
-                Some(s) => {
-                    let mut body = EventBody::RecordIngested {
-                        ty: r.ty.clone(),
-                        key: r.key.clone(),
-                        version: lakelands_api::Version(version_before + 1),
-                        patch: patch.clone(),
-                        made: false,
-                    };
-                    let mut boxed = s.clone();
-                    let cipher = ciphers.sealed(&lake.keys, source, s)?;
-                    crate::sealing::seal(&mut body, &mut boxed, source, cipher);
-                    let EventBody::RecordIngested { patch: stored, .. } = &body else {
-                        unreachable!("the body sealed is a record_ingested")
-                    };
-                    let boxed = boxed.boxed.unwrap_or_default();
-                    log::boxed_ingest_id(source, &r.ty, &r.key, version_before, stored, &boxed)
-                }
-                None => log::ingest_id(source, &r.ty, &r.key, version_before, &patch),
+            let insert_only = d.at.sight.ty(&r.ty)?.insert_only;
+            let ledger = Ledger {
+                now,
+                apart,
+                pair: &pair,
+                ciphers: &mut ciphers,
+                seen: &seen,
+                asks: &mut *asks,
             };
-            let unchanged = t.live().is_some_and(|b| {
-                patch.iter().all(|(f, v)| match b.fields.get(f) {
-                    Some(stored) => stored == v,
-                    None => v.is_null(),
-                })
-            });
-            if unchanged || !other && (seen.contains(&id) || asks.applied(view, &id)?) {
+            let hold: &mut Hold<'_> =
+                &mut |d, decl, live, after, sent| d.constraints_hold(decl, live, after, sent);
+            let had: Had<'_> = (lake, w, view, &forgotten);
+            let stepped = step(&mut d, had, (r, Some(source), &once), Some(ledger), hold)?;
+            let Some((plan, id)) = stepped else {
                 duplicates += 1;
                 return Ok(());
-            }
-            if patch.is_empty() {
-                return Err(Error::invalid(Case::PatchEmpty));
-            }
-            // An authored field it is admitted to, only where no other
-            // hand's value stands (069).
-            let made = || match t.live() {
-                Some(r) => Ok(made_by(lake, &[r], std::slice::from_ref(source))?.contains(&r.made)),
-                None => Ok(false),
             };
-            lakelands_core::check_admitted(decl, (t.live(), source), &patch, made)?;
-            // An insert-only type's key is written once: a record stands
-            // at it, live or retired, or this window wrote it. Another's
-            // record and a held one are judged as before, so the mark
-            // tells nothing of them (lakelands#1044).
-            let stands = t.before.is_some() && !other;
-            let at = (r.ty.clone(), r.key.clone());
-            if decl.insert_only && (stands || once.contains(&at)) {
-                let (ty, key) = (r.ty.clone(), r.key.clone());
-                return Err(Error::constraint(None, Case::WrittenOnce { ty, key }));
-            }
-            // The record is applied as the source states it, so a guard reads
-            // the `seen_at` the fold keeps.
-            let stated = (Some(id.clone()), r.seen_at, r.upstream.clone());
-            (d.envelope.id, d.envelope.seen_at, d.envelope.upstream) = stated;
-            d.envelope.sealed = sealed;
-            let plan = d.write(decl, &r.key, t, patch, None)?;
-            // A link holds its relation's cardinality, over the lake's live
-            // links and those earlier in this window: judged once the plan
-            // admitted the record its writer leaves,
-            // so that it names nothing of another's record and passes over no
-            // link a holder's `only` admits (051).
-            if let Some(Some((t, relation))) = relation {
-                // The ends as the record holds them: the key rule fills
-                // those the patch leaves out.
-                let end = |f: &str| {
-                    let end = plan.after.fields.get(f).and_then(|v| v.as_str());
-                    end.map(lakelands_api::RecordKey::from)
-                };
-                if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
-                    crate::writes::cardinality(
-                        (view, &d.at.sight),
-                        &d.pending,
-                        (&t.name, relation),
-                        &from,
-                        &to,
-                    )?;
-                }
-            }
             let planned = d.planned(plan)?.drafts.into_iter();
             drafts.extend(planned.map(|p| Draft {
                 delivery: r.delivery.clone(),
                 ..p
             }));
-            if decl.insert_only {
-                once.insert(at);
+            if insert_only {
+                once.insert((r.ty.clone(), r.key.clone()));
             }
-            seen.insert(id);
+            seen.extend(id);
             committed += 1;
             Ok(())
         });
@@ -600,6 +509,162 @@ fn judge(
         quarantined,
         ids,
     })
+}
+
+/// What only a window keeps of the records it writes: its clock, the
+/// keys it seals under, and the ids it has met.
+struct Ledger<'l> {
+    now: Timestamp,
+    apart: Option<&'l Apart>,
+    pair: &'l Pair,
+    ciphers: &'l mut crate::sealing::Ciphers,
+    seen: &'l BTreeSet<EventId>,
+    asks: &'l mut Asks,
+}
+
+/// One record judged as a window judges it, up to its plan, its
+/// constraints judged by `hold`: refused, a write that leaves it as it
+/// stands (`None`), or planned, with the id its event takes. `source` is
+/// what it is ingested for; `once`, the insert-only keys written before
+/// it. Without a `ledger` nothing is sealed and no id is made, so no
+/// event of the log is met as its duplicate: a judge's candidate.
+fn step(
+    d: &mut Decide<'_>,
+    (lake, w, view, forgotten): Had<'_>,
+    (r, source, once): (
+        &SourceRecord,
+        Option<&SourceId>,
+        &BTreeSet<(TypeName, RecordKey)>,
+    ),
+    ledger: Option<Ledger<'_>>,
+    hold: &mut Hold<'_>,
+) -> Result<Option<(RecordPlan, Option<EventId>)>> {
+    let decl = d.at.sight.ty(&r.ty)?;
+    crate::writes::untold_setting(&d.at.sight, decl, &r.key)?;
+    d.envelope.source = source.cloned();
+    // The key's form before the door, as `upsert` checks it. Then the
+    // door: a patch that carries a field the source is not the
+    // authority on, nor admitted to, is refused whole, even when that
+    // field's value is the one already stored.
+    let patch = d.checked(decl, &r.key, &r.fields)?;
+    if let Some(own) = &r.source {
+        crate::writes::check_source(own)?;
+    }
+    if let Some(own) = &r.delivery {
+        crate::writes::check_delivery(own)?;
+    }
+    stated(r)?;
+    // A record a holder of `only` is not admitted is, to it, a key that
+    // is free: it is not compared, and the write is refused as on a
+    // free key with another's owner (051).
+    let t = d.target(decl, &r.key)?;
+    // A link type no relation carries, its relation renamed or
+    // removed, stays declared for its history and takes no link.
+    let types = w.ontology.types.values().map(|e| &e.decl);
+    let relation = (links::is_link_type(&r.ty)).then(|| links::relation_of(types, &r.ty));
+    if let Some(None) = relation {
+        let ty = r.ty.clone();
+        return Err(Error::invalid(Case::UnclaimedLinkType { ty }));
+    }
+    let other = t.own().is_none() && t.before.is_some();
+    let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
+    if let Some(source) = source.filter(|s| forgotten.contains_key(*s)) {
+        let source = source.clone();
+        return Err(Error::invalid(Case::SourceForgotten { source }));
+    }
+    // Its values of an erasable field enter the log sealed under its
+    // key, in one box, and its id is the patch's and the box's as
+    // stored: no digest of a plaintext value enters the log (058, 083).
+    let sealed = match (&ledger, source) {
+        (Some(l), Some(_)) => sealing((lake, w, view, l.now), l.apart, l.pair, (decl, &patch))?,
+        _ => None,
+    };
+    let unchanged = t.live().is_some_and(|b| {
+        patch.iter().all(|(f, v)| match b.fields.get(f) {
+            Some(stored) => stored == v,
+            None => v.is_null(),
+        })
+    });
+    let (id, met) = match (ledger, source) {
+        (Some(l), Some(source)) => {
+            let id = match &sealed {
+                Some(s) => {
+                    let mut body = EventBody::RecordIngested {
+                        ty: r.ty.clone(),
+                        key: r.key.clone(),
+                        version: lakelands_api::Version(version_before + 1),
+                        patch: patch.clone(),
+                        made: false,
+                    };
+                    let mut boxed = s.clone();
+                    let cipher = l.ciphers.sealed(&lake.keys, source, s)?;
+                    crate::sealing::seal(&mut body, &mut boxed, source, cipher);
+                    let EventBody::RecordIngested { patch: stored, .. } = &body else {
+                        unreachable!("the body sealed is a record_ingested")
+                    };
+                    let boxed = boxed.boxed.unwrap_or_default();
+                    log::boxed_ingest_id(source, &r.ty, &r.key, version_before, stored, &boxed)
+                }
+                None => log::ingest_id(source, &r.ty, &r.key, version_before, &patch),
+            };
+            let met = unchanged || !other && (l.seen.contains(&id) || l.asks.applied(view, &id)?);
+            (Some(id), met)
+        }
+        _ => (None, unchanged),
+    };
+    if met {
+        return Ok(None);
+    }
+    if patch.is_empty() {
+        return Err(Error::invalid(Case::PatchEmpty));
+    }
+    // An authored field it is admitted to, only where no other
+    // hand's value stands (069).
+    if let Some(source) = source {
+        let made = || match t.live() {
+            Some(r) => Ok(made_by(lake, &[r], std::slice::from_ref(source))?.contains(&r.made)),
+            None => Ok(false),
+        };
+        lakelands_core::check_admitted(decl, (t.live(), source), &patch, made)?;
+    }
+    // An insert-only type's key is written once: a record stands
+    // at it, live or retired, or this window wrote it. Another's
+    // record and a held one are judged as before, so the mark
+    // tells nothing of them (lakelands#1044).
+    let stands = t.before.is_some() && !other;
+    if decl.insert_only && (stands || once.contains(&(r.ty.clone(), r.key.clone()))) {
+        let (ty, key) = (r.ty.clone(), r.key.clone());
+        return Err(Error::constraint(None, Case::WrittenOnce { ty, key }));
+    }
+    // The record is applied as the source states it, so a guard reads
+    // the `seen_at` the fold keeps.
+    let stated = (id.clone(), r.seen_at, r.upstream.clone());
+    (d.envelope.id, d.envelope.seen_at, d.envelope.upstream) = stated;
+    d.envelope.sealed = sealed;
+    let plan = d.held(decl, &r.key, t, (patch, None), hold)?;
+    // A link holds its relation's cardinality, over the lake's live
+    // links and those earlier in this window: judged once the plan
+    // admitted the record its writer leaves,
+    // so that it names nothing of another's record and passes over no
+    // link a holder's `only` admits (051).
+    if let Some(Some((t, relation))) = relation {
+        // The ends as the record holds them: the key rule fills
+        // those the patch leaves out.
+        let end = |f: &str| {
+            let end = plan.after.fields.get(f).and_then(|v| v.as_str());
+            end.map(lakelands_api::RecordKey::from)
+        };
+        if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
+            crate::writes::cardinality(
+                (view, &d.at.sight),
+                &d.pending,
+                (&t.name, relation),
+                &from,
+                &to,
+            )?;
+        }
+    }
+    Ok(Some((plan, id)))
 }
 
 /// The declaration of `r`'s type, where nothing keeps a refusal of `r`
@@ -1141,3 +1206,72 @@ impl Stream for Receiver {
 
 #[cfg(test)]
 mod tests;
+
+/// `judge` of candidates of `ty`: each judged as this window would judge
+/// it, alone, against what the lake holds at its head, and nothing
+/// appended (`docs/decisions/113-a-judge-answers-what-rules-say-of-records.md`).
+/// A refusal that stops its write before its rules is the record's
+/// answer; past them every rule is judged, the write's own parts too,
+/// and a refusal after them is the record's where no rule broke.
+pub(crate) fn judge_candidates(
+    call: crate::writes::Asked<'_>,
+    ty: &TypeName,
+    records: &[SourceRecord],
+    asked: &lakelands_api::judge::Rules,
+) -> Result<(Position, lakelands_api::judge::JudgeReport)> {
+    crate::reads::bounded(call.lake, records.len())?;
+    if let Some(r) = records.iter().find(|r| r.ty != *ty) {
+        let (named, carried) = (ty.clone(), r.ty.clone());
+        return Err(Error::invalid(Case::CandidateOfAnotherType {
+            named,
+            carried,
+        }));
+    }
+    let lake = call.lake;
+    let view = lake.engine.view(None)?;
+    let w = lake.reading(view.as_ref())?;
+    let forgotten = crate::lake::forgotten_list(view.as_ref(), &Default::default())?;
+    let mut d = call.decide(&w, view.as_ref(), w.last_known_at, 0);
+    (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
+    let decl = d.at.sight.ty(ty)?.clone();
+    let rules = crate::reads::judged_rules(&d.at.sight, &decl, asked)?;
+    // Each rule planned as the write plans a constraint, so that the
+    // write's own choice of what it judges is the judge's; one that admits
+    // at ingest is judged and reported too.
+    let planned: Vec<_> = (rules.iter())
+        .map(|rule| d.planned_rule(&decl, rule.decl.clone(), rule.holds.clone()))
+        .collect();
+    let mut judging = crate::reads::Judging::of(rules);
+    let once = BTreeSet::new();
+    for (i, r) in records.iter().enumerate() {
+        // Each alone: what an earlier candidate would write is not read.
+        d.pending = Default::default();
+        let at = (i as u32, ty, &r.key);
+        let (mut reached, mut broke) = (false, false);
+        let hold: &mut Hold<'_> = &mut |d, decl, live, after, sent| {
+            let (chosen, preceding) = d.judged(decl, &planned, (live, after, sent))?;
+            let scope = d.scope(live, after, &preceding);
+            let chosen = |rule: &crate::reads::Rule| chosen.iter().any(|c| c.decl == rule.decl);
+            broke = judging.judge(at, &scope, false, chosen);
+            reached = true;
+            Ok(())
+        };
+        // INTERIM: lakelands#1670 — a candidate is judged for its own
+        // source; one that names none is judged for no source, so neither
+        // a forgotten source nor what its source is admitted to refuses it.
+        let had: Had<'_> = (lake, &w, view.as_ref(), &forgotten);
+        let wrote = step(&mut d, had, (r, r.source.as_ref(), &once), None, hold);
+        let refused = |e: Error| match e {
+            Error::Refused { reason, .. } => Ok(reason),
+            e => Err(e),
+        };
+        match (reached, wrote) {
+            (false, Ok(_)) => judging.stopped(i as u32, &r.key, None),
+            (false, Err(e)) => judging.stopped(i as u32, &r.key, Some(refused(e)?)),
+            (true, Err(e)) if !broke => judging.after(refused(e)?),
+            (true, _) => {}
+        }
+    }
+    let position = view.position().unwrap_or(Position::GENESIS);
+    Ok((position, judging.report))
+}

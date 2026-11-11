@@ -1,4 +1,5 @@
 use super::*;
+use lakelands_api::judge::UnjudgedWhy;
 
 #[test]
 fn fusion_rewards_agreement_and_breaks_ties_by_key() {
@@ -149,4 +150,89 @@ fn only_a_reads_open_reads_the_wall_clock() {
     .map(|(f, n)| (f.to_owned(), n))
     .into();
     assert_eq!(found, expected);
+}
+
+fn rule(name: &str, holds_text: &str) -> judge::Rule {
+    let holds = crate::declare::typed(&holds_text.into(), Eval::Constraint).unwrap();
+    judge::Rule {
+        decl: lakelands_api::ontology::ConstraintDecl {
+            name: name.into(),
+            holds: holds_text.into(),
+            description: None,
+            at_ingest: Default::default(),
+        },
+        holds,
+    }
+}
+
+#[test]
+fn a_judge_names_a_rule_once_per_reason_and_never_reads_it_as_a_pass() {
+    let mut judging = judge::Judging::of(vec![
+        rule("moved", "n > 2 and changed(n)"),
+        rule("listed", "in_set('s')"),
+    ]);
+    let ty: TypeName = "slip".into();
+    for (i, n) in [1, 7].into_iter().enumerate() {
+        let fields = BTreeMap::from([("n".into(), Value::from(n))]);
+        let scope = RecordScope {
+            fields: &fields,
+            meta: None,
+            settings: None,
+            now: Timestamp(0),
+        };
+        let key = RecordKey::from(format!("s{i}").as_str());
+        judging.judge((i as u32, &ty, &key), &scope, true, |_| true);
+    }
+    let report = judging.report;
+    // Over stored records the `changed` part is the write's alone: named
+    // once for the call, while the part a read answers still breaks s0.
+    let broken: Vec<_> = report.records.iter().map(|r| r.refusals.len()).collect();
+    assert_eq!(broken, [1, 0]);
+    let whys: Vec<_> = report
+        .unjudged
+        .iter()
+        .map(|u| (u.constraint.as_str(), &u.why))
+        .collect();
+    assert_eq!(whys.len(), 3, "{whys:?}");
+    assert_eq!(whys[0], ("moved", &UnjudgedWhy::TheWriteAlone));
+    assert!(matches!(
+        whys[1],
+        ("listed", UnjudgedWhy::Unevaluable { index: 0, .. })
+    ));
+    assert!(matches!(
+        whys[2],
+        ("listed", UnjudgedWhy::Unevaluable { index: 1, .. })
+    ));
+}
+
+#[test]
+fn a_candidate_judges_what_a_write_decides_and_answers_what_stops_it() {
+    let mut judging = judge::Judging::of(vec![rule("moved", "n > 2 and changed(n)")]);
+    let ty: TypeName = "slip".into();
+    let fields = BTreeMap::from([("n".into(), Value::from(1))]);
+    let scope = RecordScope {
+        fields: &fields,
+        meta: None,
+        settings: None,
+        now: Timestamp(0),
+    };
+    let key: RecordKey = "s0".into();
+    // A candidate is no stored record: its `changed` is evaluated.
+    judging.judge((0, &ty, &key), &scope, false, |_| true);
+    judging.after(Refusal::TooLarge { max: 1 });
+    judging.stopped(1, &"s1".into(), Some(Refusal::TooLarge { max: 2 }));
+    judging.stopped(2, &"s2".into(), None);
+    let report = judging.report;
+    let counts: Vec<_> = report
+        .records
+        .iter()
+        .map(|r| (r.index, r.refusals.len()))
+        .collect();
+    assert!(
+        report
+            .unjudged
+            .iter()
+            .all(|u| u.why != UnjudgedWhy::TheWriteAlone)
+    );
+    assert_eq!(counts, [(0, 2), (1, 1), (2, 0)]);
 }

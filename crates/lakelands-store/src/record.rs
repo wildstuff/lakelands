@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex};
 use lakelands_api::error::{Case, Flaw, Part, Said};
 use lakelands_api::event::{Event, EventBody, Procedure};
 use lakelands_api::expr::Expr;
-use lakelands_api::ontology::{Authority, OnInputChange, TypeDecl, ValueTypeDecl};
+use lakelands_api::ontology::{Authority, ConstraintDecl, OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::{Error, FieldName, Position, Result, TypeName, Value};
 use lakelands_core::sight::Door;
@@ -91,7 +91,7 @@ pub struct Plan {
 /// a walk judges of it, without what only the write can judge, the
 /// write's clock and the record before it; `None` where nothing is left.
 pub(crate) struct Constraint {
-    pub(crate) decl: lakelands_api::ontology::ConstraintDecl,
+    pub(crate) decl: ConstraintDecl,
     pub(crate) holds: Expr,
     pub(crate) walked: Option<Walk>,
     pub(crate) reads: BTreeSet<FieldName>,
@@ -121,47 +121,7 @@ impl Plan {
             Some((f.name.clone(), procedure))
         });
         let derived = derive::order(&decl);
-        let computed = derived.as_deref().unwrap_or_default();
-        // What moves a field it reads: a derived field's inputs, and those
-        // of a field the fold clears when they change, to the fields a
-        // write sends (lakelands#1119).
-        let feeds = (computed.iter())
-            .map(|(f, e)| (f, lakelands_core::derive::reads(e)))
-            .chain(
-                decl.fields
-                    .iter()
-                    .filter(|f| f.on_input_change == OnInputChange::Clear)
-                    .map(|f| (&f.name, f.depends_on.iter().cloned().collect())),
-            );
-        let feeds: Vec<(&FieldName, BTreeSet<FieldName>)> = feeds.collect();
-        let fed = |reads: &BTreeSet<FieldName>| {
-            let mut fed = reads.clone();
-            while let Some(more) =
-                (feeds.iter()).find(|(f, inputs)| fed.contains(*f) && !inputs.is_subset(&fed))
-            {
-                fed.extend(more.1.iter().cloned());
-            }
-            fed
-        };
-        let constraints = (decl.constraints.iter()).filter_map(|c| {
-            let place = lakelands_core::expr::Place::Constraint;
-            let holds = crate::declare::typed(&c.holds, place).ok()?;
-            let reads = lakelands_core::derive::reads(&holds);
-            let walked = holds.walked().map(|holds| {
-                let reads = lakelands_core::derive::reads(&holds);
-                let fed = fed(&reads);
-                Walk { holds, reads, fed }
-            });
-            Some(Constraint {
-                decl: c.clone(),
-                walked,
-                fed: fed(&reads),
-                holds,
-                reads,
-            })
-        });
-        let constraints = constraints.collect();
-        Plan {
+        let mut plan = Plan {
             entries: entries(o, &raw.name).collect(),
             value_types: named
                 .filter_map(|n| o.value_types.get(n.as_str()))
@@ -170,9 +130,68 @@ impl Plan {
             derived,
             settled: backed::computed_order(o, raw),
             procedures: procedures.collect(),
-            constraints,
+            constraints: Vec::new(),
             decl,
+        };
+        let declared = (plan.decl.constraints.iter()).filter_map(|c| {
+            let place = lakelands_core::expr::Place::Constraint;
+            let holds = crate::declare::typed(&c.holds, place).ok()?;
+            Some(plan.constraint(c.clone(), holds))
+        });
+        plan.constraints = declared.collect();
+        plan
+    }
+
+    /// `c`, its condition typed as `holds`, as the write path judges it
+    /// over this type: with the fields it reads and those whose write
+    /// moves them. A judge's proposed rule is planned so as well as a
+    /// declared one.
+    pub(crate) fn constraint(&self, c: ConstraintDecl, holds: Expr) -> Constraint {
+        // A relation `exists()` names is no field a grant covers: what it
+        // reaches is the evaluator's to answer. Only a proposed rule
+        // carries one; a declaration refuses it.
+        let link = |f: &FieldName| {
+            self.decl
+                .relations
+                .iter()
+                .any(|r| r.name.as_str() == f.as_str())
+        };
+        let mut reads = lakelands_core::derive::reads(&holds);
+        reads.retain(|f| !link(f));
+        let walked = holds.walked().map(|holds| {
+            let reads = lakelands_core::derive::reads(&holds);
+            let fed = self.fed(&reads);
+            Walk { holds, reads, fed }
+        });
+        Constraint {
+            decl: c,
+            walked,
+            fed: self.fed(&reads),
+            holds,
+            reads,
         }
+    }
+
+    /// What moves the fields `reads`: a derived field's inputs, and those
+    /// of a field the fold clears when they change, to the fields a write
+    /// sends (lakelands#1119).
+    fn fed(&self, reads: &BTreeSet<FieldName>) -> BTreeSet<FieldName> {
+        let computed = self.derived.as_deref().unwrap_or_default();
+        let feeds = (computed.iter())
+            .map(|(f, e)| (f, lakelands_core::derive::reads(e)))
+            .chain(
+                (self.decl.fields.iter())
+                    .filter(|f| f.on_input_change == OnInputChange::Clear)
+                    .map(|f| (&f.name, f.depends_on.iter().cloned().collect())),
+            );
+        let feeds: Vec<(&FieldName, BTreeSet<FieldName>)> = feeds.collect();
+        let mut fed = reads.clone();
+        while let Some(more) =
+            (feeds.iter()).find(|(f, inputs)| fed.contains(*f) && !inputs.is_subset(&fed))
+        {
+            fed.extend(more.1.iter().cloned());
+        }
+        fed
     }
 }
 

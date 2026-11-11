@@ -8,7 +8,7 @@ use lakelands_api::seam::{Count, Spread};
 use super::*;
 use crate::exec::{Reply, stopped_by_panic};
 use crate::lake::{Reads, owing};
-use crate::record;
+use crate::record::{self, Constraint};
 
 /// What a decision's own events carry beside the call's writer and
 /// context, set before the record they make is computed, so that what is
@@ -121,6 +121,12 @@ pub(crate) struct Decide<'a> {
     /// and a purge's say so; `retired` otherwise.
     pub retiring_as: ChangeKind,
 }
+
+/// What judges the constraints over the record a write makes, given it
+/// live and after and the fields sent: the write's own
+/// ([`Decide::constraints_hold`]), or a judge's, which reports them.
+pub(crate) type Hold<'h> = dyn FnMut(&Decide<'_>, &TypeDecl, Option<&StoredRecord>, &StoredRecord, &[FieldName]) -> Result<()>
+    + 'h;
 
 impl Decide<'_> {
     /// One of the decision's own events.
@@ -468,22 +474,53 @@ impl Decide<'_> {
     }
 
     /// Each constraint of `decl` that the write moves holds on `after`
-    /// (lakelands#1119). Whether the write is judged is told by what it
-    /// creates and sends, and the derived fields those feed, never by a
-    /// value: one who does not read every field a judged constraint reads
-    /// is not granted the write, whether it would hold or not. A source's
-    /// window does not judge a constraint that admits at ingest. It reads
-    /// the write's clock and, through `preceding`, the record before this
-    /// one in a series, which only the write judges (lakelands#1552).
-    fn constraints_hold(
+    /// (lakelands#1119), refused as broken at the first that does not. A
+    /// source's window does not judge a constraint that admits at ingest.
+    pub(crate) fn constraints_hold(
         &self,
         decl: &TypeDecl,
         live: Option<&StoredRecord>,
         after: &StoredRecord,
         sent: &[FieldName],
     ) -> Result<()> {
-        use std::collections::btree_map::Entry;
         let plan = self.plans.get(self.ontology, decl);
+        let admits =
+            |c: &&Constraint| matches!(self.door, Door::Source) && !c.decl.at_ingest.refuses();
+        let all = plan.constraints.iter().filter(|c| !admits(c));
+        let (judged, preceding) = self.judged(decl, all, (live, after, sent))?;
+        let scope = self.scope(live, after, &preceding);
+        match judged
+            .iter()
+            .find(|c| !expr::holds(&c.holds, &scope).unwrap_or(false))
+        {
+            Some(c) => {
+                let (constraint, ty) = (c.decl.name.clone(), decl.name.clone());
+                let key = after.key.clone();
+                let case = Case::ConstraintBroken {
+                    constraint,
+                    ty,
+                    key,
+                };
+                Err(Error::constraint(None, case))
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// The constraints of `all` this write judges, with the record before
+    /// `after` in each series they read. Whether one is judged is told by
+    /// what the write creates and sends, and the derived fields those
+    /// feed, never by a value: one who does not read every field a judged
+    /// constraint reads is not granted the write, whether it would hold or
+    /// not. A judged one that reads `preceding` reads the record before
+    /// this one in a series, which only the write judges (lakelands#1552).
+    pub(crate) fn judged<'c>(
+        &self,
+        decl: &TypeDecl,
+        all: impl IntoIterator<Item = &'c Constraint>,
+        (live, after, sent): (Option<&StoredRecord>, &StoredRecord, &[FieldName]),
+    ) -> Result<(Vec<&'c Constraint>, expr::Preceding)> {
+        use std::collections::btree_map::Entry;
         // A field a hiding lowers on the record, before or after, is read
         // as one its grant does not let it read (006).
         let low = [live.map(|b| &b.fields), Some(&after.fields)]
@@ -493,10 +530,9 @@ impl Decide<'_> {
             let told = low.iter().flatten().all(|l| !l.contains_key(f));
             told && fields.any(|d| self.at.sight.field_access(decl, d).reads())
         };
-        let mut preceding = expr::Preceding::new();
-        for c in &plan.constraints {
-            let admits = matches!(self.door, Door::Source) && !c.decl.at_ingest.refuses();
-            if admits || (live.is_some() && !sent.iter().any(|f| c.fed.contains(f))) {
+        let (mut judged, mut preceding) = (Vec::new(), expr::Preceding::new());
+        for c in all {
+            if live.is_some() && !sent.iter().any(|f| c.fed.contains(f)) {
                 continue;
             }
             granted(c.reads.iter().all(reads))?;
@@ -521,28 +557,40 @@ impl Decide<'_> {
                     read.iter().all(|f| !low.contains_key(f))
                 }))?;
             }
-            let scope = WriteScope {
-                after: &after.fields,
-                before,
-                retiring: false,
-                meta: Some(&after.meta),
-                settings: Some(self.at.settings),
-                preceding: Some(&preceding),
-                paired: None,
-                now: self.at.now,
-            };
-            if !expr::holds(&c.holds, &scope).unwrap_or(false) {
-                let (constraint, ty) = (c.decl.name.clone(), decl.name.clone());
-                let key = after.key.clone();
-                let case = Case::ConstraintBroken {
-                    constraint,
-                    ty,
-                    key,
-                };
-                return Err(Error::constraint(None, case));
-            }
+            judged.push(c);
         }
-        Ok(())
+        Ok((judged, preceding))
+    }
+
+    /// `c`, its condition typed as `holds`, planned over `decl` as this
+    /// write plans the type's constraints.
+    pub(crate) fn planned_rule(
+        &self,
+        decl: &TypeDecl,
+        c: ConstraintDecl,
+        holds: lakelands_api::expr::Expr,
+    ) -> Constraint {
+        self.plans.get(self.ontology, decl).constraint(c, holds)
+    }
+
+    /// What a constraint judged over `after` reads: the write's clock and
+    /// settings, the record live before it, and `preceding`.
+    pub(crate) fn scope<'s>(
+        &'s self,
+        live: Option<&'s StoredRecord>,
+        after: &'s StoredRecord,
+        preceding: &'s expr::Preceding,
+    ) -> WriteScope<'s> {
+        WriteScope {
+            after: &after.fields,
+            before: live.map(|b| &b.fields),
+            retiring: false,
+            meta: Some(&after.meta),
+            settings: Some(self.at.settings),
+            preceding: Some(preceding),
+            paired: None,
+            now: self.at.now,
+        }
     }
 
     /// The live record of `decl` before `after` in `series`, its `by` and
@@ -551,7 +599,7 @@ impl Decide<'_> {
     /// exactly, the one whose `by` is the greatest below `after`'s
     /// ([`Self::latest`]). None where `after`'s `by` or a matched field is
     /// null.
-    pub(super) fn preceding(
+    pub(crate) fn preceding(
         &self,
         decl: &TypeDecl,
         after: &StoredRecord,
@@ -700,8 +748,22 @@ impl Decide<'_> {
         decl: &TypeDecl,
         key: &RecordKey,
         t: Target,
-        mut patch: Patch,
+        patch: Patch,
         expected: Option<Version>,
+    ) -> Result<RecordPlan> {
+        let hold: &mut Hold<'_> =
+            &mut |d, decl, live, after, sent| d.constraints_hold(decl, live, after, sent);
+        self.held(decl, key, t, (patch, expected), hold)
+    }
+
+    /// [`Self::write`], its constraints judged by `hold`.
+    pub(crate) fn held(
+        &self,
+        decl: &TypeDecl,
+        key: &RecordKey,
+        t: Target,
+        (mut patch, expected): (Patch, Option<Version>),
+        hold: &mut Hold<'_>,
     ) -> Result<RecordPlan> {
         let (o, view, sees) = (self.ontology, self.at.view(), &self.at.sight);
         untold_setting(sees, decl, key)?;
@@ -778,7 +840,7 @@ impl Decide<'_> {
         let records = [live.map(|b| &b.fields), Some(&after.fields)];
         sees.check_hidden_write(&decl.name, records, &sent)?;
         record::check_required(decl, &after.fields)?;
-        self.constraints_hold(decl, live.filter(|_| !other), &after, &sent)?;
+        hold(self, decl, live.filter(|_| !other), &after, &sent)?;
         if after.ty.as_str() == AGING_RULE_TYPE {
             let rule = crate::aging::check(o, &after.fields)
                 .map_err(|(field, said)| Error::invalid_at(&field, *said))?;

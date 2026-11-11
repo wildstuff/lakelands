@@ -25,6 +25,7 @@ pub mod error;
 pub mod event;
 pub mod expr;
 pub mod id;
+pub mod judge;
 pub mod key;
 pub mod location;
 pub mod ontology;

@@ -68,6 +68,7 @@ mod host_settings;
 mod in_force;
 mod ingest;
 mod initial;
+mod judge;
 mod judged;
 mod kept_builds;
 mod kept_heads;
@@ -407,6 +408,16 @@ pub const ALL: &[Check] = &[
     guard_in_force::GUARD_IN_FORCE_READS_ONE_PARTITION,
     read_clock::READ_CLOCK,
     read_clock::TODAY_RULES_OUT,
+    judge::JUDGE_WRITES_NOTHING,
+    judge::JUDGE_SAYS_WHAT_THE_WRITE_SAYS,
+    judge::JUDGE_NAMES_WHAT_ONLY_A_WRITE_DECIDES,
+    judge::JUDGE_JUDGES_WHAT_THE_WRITE_JUDGES,
+    judge::JUDGE_READS_AT_THE_READS_CLOCK,
+    judge::JUDGE_NAMES_WHAT_NO_SCOPE_ANSWERS,
+    judge::JUDGE_ANSWERS_NO_FIELD,
+    judge::JUDGE_IS_BOUNDED,
+    judge::JUDGE_JUDGES_ONE_TYPE,
+    judge::JUDGE_IS_NO_TOOL,
     before_declared::BEFORE_DECLARED,
     authored_reads::AUTHOR_READS,
     renamed_grants::GRANT_FOLLOWS,

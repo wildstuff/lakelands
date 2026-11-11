@@ -873,6 +873,38 @@ impl Catalog for Doors {
             .await
     }
 
+    async fn judge(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        judge: lakelands_api::judge::Judge,
+    ) -> Result<Reply<lakelands_api::judge::JudgeReport>> {
+        use lakelands_api::judge::Subject;
+        let (ty, rules) = (ty.clone(), judge.rules);
+        let records = match judge.subject {
+            Subject::Keys(keys) => {
+                let read =
+                    move |r: &crate::reads::Reader<'_>| r.judge(&ty, &keys, &rules, &judge.at);
+                return self.read(who, (judge.at, None), read).await;
+            }
+            Subject::Candidates(records) => records,
+        };
+        same_lake(&self.lake, who)?;
+        let (lake, who) = (self.lake.clone(), who.clone());
+        exec::run(move || {
+            let (who, ..) = seen(&lake, who)?;
+            let context = WriteContext::default();
+            let asked = writes::Asked {
+                lake: &lake,
+                who: &who,
+                context: &context,
+            };
+            let (position, data) = crate::ingest::judge_candidates(asked, &ty, &records, &rules)?;
+            Ok(Reply { position, data })
+        })
+        .await
+    }
+
     async fn upsert(
         &self,
         who: &Principal,

@@ -1788,6 +1788,9 @@ catalog! {
         /// A write that would leave a record breaking its type's
         /// constraint.
         ConstraintBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "`{ty}` `{key}` would break the constraint `{constraint}`",
+        /// A judge's candidate whose own type is not the type the call
+        /// names; nothing of the call is judged (113).
+        CandidateOfAnotherType { named: TypeName, carried: TypeName } => "the judge names `{named}`, and a candidate is of `{carried}`; one call judges one type",
         /// Records a walk of the lake would leave breaking their type's
         /// constraint: a declaration's or a migration's computing again, a
         /// re-key's rewritten references, a value type's renames.
