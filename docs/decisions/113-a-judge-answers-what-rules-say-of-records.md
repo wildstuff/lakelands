@@ -372,6 +372,11 @@ claim of the contract rather than of one engine:
   `TheWriteAlone` for it; a rule calling `in_force()` over either
   subject is refused whole `invalid`; and a conjunct the evaluator
   fails is `unjudged` `Unevaluable`, never a breaker.
+- `JUDGE_JUDGES_WHAT_THE_WRITE_JUDGES` — a candidate for a stored
+  record is judged by the rules its write would judge, the window's own
+  step deciding: a rule over a field the candidate does not send is not
+  judged for it, though the stored record breaks it; a candidate that
+  leaves the record as it stands is refused by none.
 - `JUDGE_READS_AT_THE_READS_CLOCK` — a declared rule and a proposed
   rule reading `today()` or `now()` over stored keys each answer, at
   each of the read's clocks, exactly the keys `TODAY_RULES_OUT`

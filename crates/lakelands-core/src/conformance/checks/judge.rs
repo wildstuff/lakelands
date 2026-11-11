@@ -24,6 +24,11 @@ check!(
 );
 
 check!(
+    JUDGE_JUDGES_WHAT_THE_WRITE_JUDGES = a_judge_judges_what_the_write_judges,
+    "113: a candidate for a stored record is judged by the rules its write would judge: a rule over `secret`, which a feed of `n` does not send, breaks the stored record and is not judged for the candidate; a candidate leaving the record as it stands is refused by none, though the stored record breaks the rule"
+);
+
+check!(
     JUDGE_READS_AT_THE_READS_CLOCK = a_judge_reads_at_the_reads_clock,
     "113, 052: a declared rule and a proposed rule reading `today()` over stored keys each break, at each of the read's clocks, exactly the keys a `find` of `not(<rule>)` answers there: one clock rule for both forms"
 );
@@ -245,6 +250,29 @@ async fn a_judge_names_what_only_a_write_decides(store: Store) -> Held {
         sent.unjudged.is_empty() && broken(&sent) == pairs(&[("s1", "steady")]),
         "a candidate is judged as the window judges it, every part: `s1` falls to 0, \
          `s2` changes to 8; nothing is the write's alone: {sent:?}"
+    );
+    Ok(())
+}
+
+async fn a_judge_judges_what_the_write_judges(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    slips(&l).await?;
+    let small = || proposed("small", "secret < 100");
+    let stored = judge(&l, keys(&["s1"]), small()).await?;
+    let sent = judge(&l, candidates("slip", &[("s1", 3)]), small()).await?;
+    let quiet = |r: &JudgeReport| r.records.iter().all(|j| j.refusals.is_empty());
+    ensure!(
+        broken(&stored) == pairs(&[("s1", "small")]) && quiet(&sent) && sent.records.len() == 1,
+        "`small` breaks the stored `s1`; a feed of `n` sends no `secret`, so the write \
+         judges no `small`: {stored:?}, {sent:?}"
+    );
+    let big = || proposed("big", "n > 9");
+    let stored = judge(&l, keys(&["s2"]), big()).await?;
+    let same = judge(&l, candidates("slip", &[("s2", 7)]), big()).await?;
+    ensure!(
+        broken(&stored) == pairs(&[("s2", "big")]) && quiet(&same) && same.records.len() == 1,
+        "`big` breaks the stored `s2`; a candidate leaving it as it stands is refused by \
+         none: {stored:?}, {same:?}"
     );
     Ok(())
 }
