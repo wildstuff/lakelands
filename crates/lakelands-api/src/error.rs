@@ -453,10 +453,11 @@ pub enum Refusal {
     /// allows (`order_by`, `project`), or a set's declaration or a migration would
     /// change more memberships than it allows (the refusal names the set),
     /// or a change to records would select more records than it allows
-    /// (`where`); nothing partial is answered or appended.
+    /// (`where`), or a judge would judge more records than it allows
+    /// (`records`); nothing partial is answered or appended.
     TooLarge {
-        /// The lake's `max_graph_nodes`, `max_offset`, `max_set_changes` or
-        /// `max_change_records`.
+        /// The lake's `max_graph_nodes`, `max_offset`, `max_set_changes`,
+        /// `max_change_records` or, for a judge's `records`, `max_limit`.
         max: u32,
     },
     /// A migration would lose information; the report says where.
@@ -599,6 +600,11 @@ pub enum Missing {
         /// Its id.
         id: crate::quarantine::QuarantineId,
     },
+    /// A constraint of the type, among those its caller is shown (113).
+    Constraint {
+        /// Its name, as the caller gave it.
+        name: crate::id::ConstraintName,
+    },
     /// A thing of a kind this build does not know, said by its error's
     /// sentence.
     #[serde(skip)]
@@ -630,6 +636,7 @@ impl fmt::Display for Missing {
             Missing::Function { name } => write!(f, "there is no function `{name}`"),
             Missing::Proposal { id } => write!(f, "there is no proposal `{id}`"),
             Missing::Quarantined { id } => write!(f, "there is no quarantined record `{id}`"),
+            Missing::Constraint { name } => write!(f, "there is no constraint `{name}`"),
             Missing::Unknown(u) => f.write_str(u.message()),
         }
     }
@@ -684,6 +691,12 @@ impl fmt::Display for Error {
                         write!(
                             f,
                             ": the condition selects more than {max} records, the lake's `limits.max_change_records`; a change is never cut, so narrow the condition"
+                        )
+                    }
+                    Refusal::TooLarge { max } if field.as_ref().is_some_and(|f| f == "records") => {
+                        write!(
+                            f,
+                            ": a judge judges {max} records, no more; it is never cut, so judge a page at a time"
                         )
                     }
                     Refusal::TooLarge { max } if field.is_some() => {

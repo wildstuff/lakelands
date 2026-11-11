@@ -120,7 +120,13 @@ pub(crate) struct Decide<'a> {
     /// What kind of change its retirements are to a trigger: a forget's
     /// and a purge's say so; `retired` otherwise.
     pub retiring_as: ChangeKind,
+    /// Set by a judge: the first record its rules are held over is kept
+    /// here, live and after, and its rules are left to the judge.
+    pub judging: Option<std::cell::RefCell<Option<Held>>>,
 }
+
+/// The record a judge holds its rules over: live, and after the write.
+pub(crate) type Held = (Option<StoredRecord>, StoredRecord);
 
 impl Decide<'_> {
     /// One of the decision's own events.
@@ -483,6 +489,13 @@ impl Decide<'_> {
         sent: &[FieldName],
     ) -> Result<()> {
         use std::collections::btree_map::Entry;
+        if let Some(slot) = &self.judging
+            && slot.borrow().is_none()
+            && after.ty == decl.name
+        {
+            *slot.borrow_mut() = Some((live.cloned(), after.clone()));
+            return Ok(());
+        }
         let plan = self.plans.get(self.ontology, decl);
         // A field a hiding lowers on the record, before or after, is read
         // as one its grant does not let it read (006).
@@ -551,7 +564,7 @@ impl Decide<'_> {
     /// exactly, the one whose `by` is the greatest below `after`'s
     /// ([`Self::latest`]). None where `after`'s `by` or a matched field is
     /// null.
-    pub(super) fn preceding(
+    pub(crate) fn preceding(
         &self,
         decl: &TypeDecl,
         after: &StoredRecord,
@@ -1189,6 +1202,7 @@ impl<'a> Asked<'a> {
             envelope: Envelope::of(Origin::Authored),
             bound: true,
             retiring_as: ChangeKind::Retired,
+            judging: None,
         }
     }
 

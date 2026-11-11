@@ -48,8 +48,8 @@ pub type CommitStream = Pin<Box<dyn Stream<Item = Result<Committed>> + Send>>;
 /// carrying its position.
 ///
 /// The per-type doors are `find`, `get`, `upsert` and `retire`; each
-/// declared verb is reached through `call`. `describe`, `query` and
-/// `search` are generic. Over MCP, each door becomes tools named by
+/// declared verb is reached through `call`. `describe`, `query`,
+/// `search` and `judge` are generic. Over MCP, each door becomes tools named by
 /// [`crate::tools::tools`] and nothing else.
 #[async_trait]
 pub trait Catalog: Send + Sync {
@@ -392,6 +392,23 @@ pub trait Catalog: Send + Sync {
     ) -> Result<Reply<crate::write::ThinReport>> {
         let _ = (who, ty, thin, preflight);
         let op = "thin".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
+
+    /// Judge records of `ty` by its rules: stored keys at `judge.at`, or
+    /// candidates as the ingest window would, against the constraints the
+    /// principal is shown or one it proposes; appending nothing
+    /// (`docs/decisions/113-a-judge-answers-what-rules-say-of-records.md`).
+    /// It is no tool. A handle that does not judge, this default, answers
+    /// it unbound.
+    async fn judge(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        judge: crate::judge::Judge,
+    ) -> Result<Reply<crate::judge::JudgeReport>> {
+        let _ = (who, ty, judge);
+        let op = "judge".to_owned();
         Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
     }
 }

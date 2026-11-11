@@ -1141,3 +1141,142 @@ impl Stream for Receiver {
 
 #[cfg(test)]
 mod tests;
+
+/// `judge` of candidates of `ty`: each judged as this window would judge
+/// it, alone, against what the lake holds at its head, and nothing
+/// appended (`docs/decisions/113-a-judge-answers-what-rules-say-of-records.md`).
+/// A refusal that stops its write before its rules is the record's
+/// answer; past them every rule is judged, the write's own parts too,
+/// and a refusal after them is the record's where no rule broke.
+pub(crate) fn judge_candidates(
+    call: crate::writes::Asked<'_>,
+    ty: &TypeName,
+    records: &[SourceRecord],
+    asked: &lakelands_api::judge::Rules,
+) -> Result<(Position, lakelands_api::judge::JudgeReport)> {
+    use std::cell::RefCell;
+
+    use lakelands_core::expr::{Preceding, WriteScope};
+
+    crate::reads::bounded(call.lake, records.len())?;
+    if let Some(r) = records.iter().find(|r| r.ty != *ty) {
+        let (named, carried) = (ty.clone(), r.ty.clone());
+        return Err(Error::invalid(Case::CandidateOfAnotherType {
+            named,
+            carried,
+        }));
+    }
+    let lake = call.lake;
+    let view = lake.engine.view(None)?;
+    let w = lake.reading(view.as_ref())?;
+    let forgotten = crate::lake::forgotten_list(view.as_ref(), &Default::default())?;
+    let mut d = call.decide(&w, view.as_ref(), w.last_known_at, 0);
+    (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
+    let decl = d.at.sight.ty(ty)?.clone();
+    let rules = crate::reads::judged_rules(&d.at.sight, &decl, asked)?;
+    let mut judging = crate::reads::Judging::of(rules);
+    for (i, r) in records.iter().enumerate() {
+        // Each alone: what an earlier candidate would write is not read.
+        d.pending = Default::default();
+        d.judging = Some(RefCell::new(None));
+        let wrote = (|| {
+            crate::writes::untold_setting(&d.at.sight, &decl, &r.key)?;
+            d.envelope.source = r.source.clone();
+            let patch = d.checked(&decl, &r.key, &r.fields)?;
+            if let Some(own) = &r.source {
+                crate::writes::check_source(own)?;
+            }
+            if let Some(own) = &r.delivery {
+                crate::writes::check_delivery(own)?;
+            }
+            stated(r)?;
+            let t = d.target(&decl, &r.key)?;
+            let types = w.ontology.types.values().map(|e| &e.decl);
+            let relation = (links::is_link_type(ty)).then(|| links::relation_of(types, ty));
+            if let Some(None) = relation {
+                let ty = ty.clone();
+                return Err(Error::invalid(Case::UnclaimedLinkType { ty }));
+            }
+            let other = t.own().is_none() && t.before.is_some();
+            if let Some(source) = r.source.as_ref().filter(|s| forgotten.contains_key(*s)) {
+                let source = source.clone();
+                return Err(Error::invalid(Case::SourceForgotten { source }));
+            }
+            let unchanged = t.live().is_some_and(|b| {
+                patch.iter().all(|(f, v)| match b.fields.get(f) {
+                    Some(stored) => stored == v,
+                    None => v.is_null(),
+                })
+            });
+            if unchanged {
+                return Ok(None);
+            }
+            if patch.is_empty() {
+                return Err(Error::invalid(Case::PatchEmpty));
+            }
+            if let Some(source) = &r.source {
+                let made = || match t.live() {
+                    Some(r) => {
+                        Ok(made_by(lake, &[r], std::slice::from_ref(source))?.contains(&r.made))
+                    }
+                    None => Ok(false),
+                };
+                lakelands_core::check_admitted(&decl, (t.live(), source), &patch, made)?;
+            }
+            if decl.insert_only && t.before.is_some() && !other {
+                let (ty, key) = (ty.clone(), r.key.clone());
+                return Err(Error::constraint(None, Case::WrittenOnce { ty, key }));
+            }
+            (d.envelope.seen_at, d.envelope.upstream) = (r.seen_at, r.upstream.clone());
+            let plan = d.write(&decl, &r.key, t, patch, None)?;
+            if let Some(Some((t, relation))) = relation {
+                let end = |f: &str| {
+                    let end = plan.after.fields.get(f).and_then(|v| v.as_str());
+                    end.map(RecordKey::from)
+                };
+                if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
+                    let held = (view.as_ref(), &d.at.sight);
+                    crate::writes::cardinality(held, &d.pending, (&t.name, relation), &from, &to)?;
+                }
+            }
+            Ok(Some(()))
+        })();
+        let captured = d.judging.take().and_then(RefCell::into_inner);
+        let refused = |e: Error| match e {
+            Error::Refused { reason, .. } => Ok(reason),
+            e => Err(e),
+        };
+        let Some((live, after)) = captured else {
+            match wrote {
+                Ok(_) => judging.stopped(i as u32, &r.key, None),
+                Err(e) => judging.stopped(i as u32, &r.key, Some(refused(e)?)),
+            }
+            continue;
+        };
+        let mut preceding = Preceding::new();
+        for rule in &judging.rules {
+            for (series, _) in rule.holds.series() {
+                if let std::collections::btree_map::Entry::Vacant(slot) = preceding.entry(series) {
+                    let found = d.preceding(&decl, &after, slot.key())?;
+                    slot.insert(found.map(|r| r.fields).unwrap_or_default());
+                }
+            }
+        }
+        let scope = WriteScope {
+            after: &after.fields,
+            before: live.as_ref().map(|b| &b.fields),
+            retiring: false,
+            meta: Some(&after.meta),
+            settings: Some(d.at.settings),
+            preceding: Some(&preceding),
+            paired: None,
+            now: d.at.now,
+        };
+        let broke = judging.judge((i as u32, ty, &r.key), &scope, false);
+        if let (false, Err(e)) = (broke, wrote) {
+            judging.after(refused(e)?);
+        }
+    }
+    let position = view.position().unwrap_or(Position::GENESIS);
+    Ok((position, judging.report))
+}

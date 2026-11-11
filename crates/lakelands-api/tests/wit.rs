@@ -491,6 +491,33 @@ fn thin_report() -> ThinReport {
     }
 }
 
+fn judged_record() -> lakelands_api::judge::JudgedRecord {
+    lakelands_api::judge::JudgedRecord {
+        index: 0,
+        key: "k".into(),
+        refusals: vec![Refusal::TooLarge { max: 1 }],
+    }
+}
+
+fn unevaluable() -> lakelands_api::judge::UnjudgedWhy {
+    let case = lakelands_api::error::Case::ExistsHere;
+    lakelands_api::judge::UnjudgedWhy::Unevaluable { index: 0, case }
+}
+
+fn unjudged() -> lakelands_api::judge::Unjudged {
+    lakelands_api::judge::Unjudged {
+        constraint: "c".into(),
+        why: unevaluable(),
+    }
+}
+
+fn judge_report() -> lakelands_api::judge::JudgeReport {
+    lakelands_api::judge::JudgeReport {
+        records: vec![judged_record()],
+        unjudged: vec![unjudged()],
+    }
+}
+
 fn upstream() -> lakelands_api::Upstream {
     lakelands_api::Upstream {
         lake: "other".into(),
@@ -1211,6 +1238,32 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ),
         ("thin", members(&thin())),
         ("thin_report", members(&thin_report())),
+        (
+            "judge",
+            members(&lakelands_api::judge::Judge {
+                subject: lakelands_api::judge::Subject::Keys(vec!["k".into()]),
+                rules: lakelands_api::judge::Rules::Declared { names: None },
+                at: read_at(),
+            }),
+        ),
+        (
+            "proposed_rule",
+            adjusted(
+                members(&lakelands_api::judge::Rules::Proposed {
+                    name: "c".into(),
+                    holds: Condition::Text("true".into()),
+                }),
+                &["kind"],
+                &[],
+            ),
+        ),
+        ("judge_report", members(&judge_report())),
+        ("judged_record", members(&judged_record())),
+        ("unjudged", members(&unjudged())),
+        (
+            "unevaluable",
+            adjusted(members(&unevaluable()), &["kind"], &[]),
+        ),
         (
             "source_record",
             members(&SourceRecord {
@@ -2146,7 +2199,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Missing::Verb { .. }
             | Missing::Function { .. }
             | Missing::Proposal { .. }
-            | Missing::Quarantined { .. } => {}
+            | Missing::Quarantined { .. }
+            | Missing::Constraint { .. } => {}
             // A newer lake's kind, said by its error's message.
             Missing::Unknown(_) => {}
         }
@@ -2171,10 +2225,39 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                         index: 1,
                     },
                 },
+                Missing::Constraint { name: "c".into() },
             ],
             Some("kind"),
         ),
     ));
+
+    {
+        use lakelands_api::judge::{Rules, Subject, UnjudgedWhy};
+        fn judged(s: &Subject, r: &Rules, w: &UnjudgedWhy) {
+            match s {
+                Subject::Keys(_) | Subject::Candidates(_) => {}
+            }
+            match r {
+                Rules::Declared { .. } | Rules::Proposed { .. } => {}
+            }
+            match w {
+                UnjudgedWhy::TheWriteAlone | UnjudgedWhy::Unevaluable { .. } => {}
+            }
+        }
+        let _ = judged;
+        let subjects = [Subject::Keys(vec![]), Subject::Candidates(vec![])];
+        checks.push(("subject", case_names(&subjects, None)));
+        let rules = [
+            Rules::Declared { names: None },
+            Rules::Proposed {
+                name: "c".into(),
+                holds: Condition::Text("true".into()),
+            },
+        ];
+        checks.push(("rules", case_names(&rules, Some("kind"))));
+        let whys = [UnjudgedWhy::TheWriteAlone, unevaluable()];
+        checks.push(("unjudged_why", case_names(&whys, Some("kind"))));
+    }
 
     fn writes(w: &ProposedWrite) {
         match w {

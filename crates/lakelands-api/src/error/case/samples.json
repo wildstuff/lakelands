@@ -1788,6 +1788,11 @@
    "type": "t"
   },
   {
+   "carried": "t",
+   "code": "candidate_of_another_type",
+   "named": "t"
+  },
+  {
    "code": "constraint_left_broken",
    "constraint": "c",
    "records": 1,
