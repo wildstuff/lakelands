@@ -21,6 +21,7 @@ fn row(source: &str, delivery: &str, index: u64, closed: bool) -> Quarantined {
         upstream: None,
         refusal: Error::not_granted(),
         more: false,
+        cause: None,
         closed: closed.then_some(QuarantineClose {
             why: ClosedWhy::Dismissed,
             position: Position(9),
@@ -111,4 +112,16 @@ fn a_refusal_told_as_its_kind_alone_names_nothing_and_reads_back() {
     let wire = serde_json::to_value(missing.kind_alone()).unwrap();
     assert_eq!(wire["error"], "not_found");
     assert!(wire.get("missing").is_none());
+}
+
+#[test]
+fn a_host_cause_is_left_off_the_wire_where_there_is_none_and_reads_back() {
+    let mut q = row("s", "d", 1, false);
+    let wire = serde_json::to_value(&q).unwrap();
+    assert!(wire.get("cause").is_none());
+    q.cause = Some("mapping".into());
+    let wire = serde_json::to_value(&q).unwrap();
+    assert_eq!(wire["cause"], "mapping");
+    let back: Quarantined = serde_json::from_value(wire).unwrap();
+    assert_eq!(back, q);
 }

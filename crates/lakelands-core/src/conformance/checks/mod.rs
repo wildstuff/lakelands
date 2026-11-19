@@ -338,6 +338,7 @@ pub const ALL: &[Check] = &[
     quarantine_host::QUARANTINED_BY_HOST_CLOSES,
     quarantine_host::QUARANTINED_BY_HOST_PROTECTED,
     quarantine_host::QUARANTINED_BY_HOST_GRANTED,
+    quarantine_host::QUARANTINED_BY_HOST_CAUSE_SHOWN,
     constraints::CONSTRAINT_HELD_AT_EVERY_DOOR,
     constraints::CONSTRAINT_JUDGED_THROUGH_WHAT_MOVES,
     constraints::CONSTRAINT_TOLD_AT_ACCEPT,

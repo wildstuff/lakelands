@@ -123,6 +123,9 @@ pub struct Quarantined {
     /// Whether the refusal holds more than its reader is shown.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub more: bool,
+    /// The host's cause code, never a value, for a record it refused (085).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
     /// Its close, for a closed one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed: Option<QuarantineClose>,
@@ -165,15 +168,11 @@ impl QuarantineFilter {
         fn is<T: PartialEq>(want: &Option<T>, got: &T) -> bool {
             want.as_ref().is_none_or(|w| w == got)
         }
-        let state = match q.closed {
-            None => QuarantineState::Open,
-            Some(_) => QuarantineState::Closed,
-        };
         is(&self.source, &q.id.source)
             && is(&self.ty, &q.ty)
             && is(&self.delivery, &q.id.delivery)
             && self.index.is_none_or(|i| i == q.id.index)
-            && self.state.is_none_or(|s| s == state)
+            && (self.state).is_none_or(|s| (s == QuarantineState::Open) == q.closed.is_none())
             && is(&self.key, &q.key)
             && self.after.as_ref().is_none_or(|a| &q.id > a)
     }
