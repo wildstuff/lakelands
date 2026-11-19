@@ -27,7 +27,7 @@ reads (009), and `subscribe` and `unsubscribe`, which begin and end the
 session's notifications of the changes it may read
 (`docs/decisions/037-the-feed-over-a-network-door.md`).
 
-Seven doors of the `Catalog` have no tool of their own: `describe_type`
+Nine doors of the `Catalog` have no tool of their own: `describe_type`
 is `describe` with a `type`, `migrate_apply` is `migrate` with the
 `report_id` of the preflight it applies, `migrate_value_type` and
 `migrate_value_type_apply` are `migrate` with a `value_type`, `apply`
@@ -35,7 +35,10 @@ has no tool, and `ingest` is deliberately not a tool — a source feeds a
 lake through a stream, not through a model — and `judge` is no tool
 either: it answers a host's question, what a rule will say of records it
 holds or is about to send, and appends nothing
-(`docs/decisions/113-a-judge-answers-what-rules-say-of-records.md`).
+(`docs/decisions/113-a-judge-answers-what-rules-say-of-records.md`),
+and nor are `vector_coverage` and `purge_preflight`, an operator's gauge
+and a source's take-back asked as a principal
+(`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
 `declare_type` is `declare`
 of a type; `declare` of any other declaration has no tool, as `apply`
 has none.
@@ -110,3 +113,6 @@ second rule to keep in step.
   doors of the `Catalog` without a tool, six after the rewrite, are
   seven. It is generic, not per-type, so the rule against a fifth
   per-type door stands as it was.
+- Amended at lakelands#1594 and lakelands#1595: `vector_coverage` and
+  `purge_preflight` joined the generic doors, asked as a principal, and
+  the doors of the `Catalog` without a tool are nine.

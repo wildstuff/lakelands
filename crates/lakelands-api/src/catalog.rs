@@ -426,6 +426,22 @@ pub trait Catalog: Send + Sync {
         let op = "vector_coverage".to_owned();
         Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
     }
+
+    /// [`LakeStore::purge_preflight`] asked by `who` through this door's
+    /// context, as a write is judged: answered where `who` may retire every
+    /// record the purge would take, naming only what it is shown, and
+    /// refused `not_granted` otherwise (116). It is no tool. A handle that
+    /// does not purge, this default, answers it unbound.
+    async fn purge_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<crate::write::PurgeReport> {
+        let _ = (who, source, ty);
+        let op = "purge_preflight".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
 }
 
 /// `ingest` for records already in hand: the records as the source
@@ -629,7 +645,7 @@ pub trait LakeStore: Send + Sync {
 
     /// What [`Self::purge_source`] would do, appending nothing: the same
     /// report, refused as the purge would be, under an id the purge may
-    /// repeat.
+    /// repeat. The host's; a principal asks [`Catalog::purge_preflight`].
     async fn purge_preflight(
         &self,
         source: &SourceId,

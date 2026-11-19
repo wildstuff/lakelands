@@ -1257,6 +1257,7 @@ pub const ALL: &[Check] = &[
     purge::ACT_REBUILD_SAME_LAKE,
     purge::REFERENCES_NAMED,
     purge::REPORT_HEAD,
+    purge::PREFLIGHT_ASKED,
     purge::ONE_TYPE,
     purge::CO_OWNED_IN_TYPE,
     purge::OWN_REFERENCES,

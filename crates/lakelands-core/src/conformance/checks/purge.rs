@@ -1286,6 +1286,11 @@ async fn a_purge_names_the_records_outside_it_that_refer_into_it(store: Store) -
 }
 
 check!(
+    PREFLIGHT_ASKED = a_principal_asks_a_purges_report_as_a_write_is_judged,
+    "039 and 116 (lakelands#1594): a principal asks `purge_preflight` at the door, under the door's write context; one that may retire every record the purge would take is answered the host's report narrowed to what it is shown, so a type without provenance it is not shown is not named; one that may not, or is not shown a type the purge would take from, is refused not granted, and a purge from a type it is not shown is not found; asking appends nothing"
+);
+
+check!(
     ONE_TYPE = a_purge_that_names_a_type_retires_what_the_source_brought_into_it_alone,
     "039, extended: a purge that names a type retires, in one append, the live records the source brought into that type, and leaves the source's records of its other types and other sources' records of that type; the report names the type, counts it alone and names no type unsearched"
 );
@@ -2015,4 +2020,62 @@ async fn a_rebuild_after_a_purge_answers_the_same_lake(store: Store) -> Held {
          then {again:?}"
     );
     Ok(())
+}
+
+/// `crm`'s report asked at the door by `who`, of `ty` where one is named.
+async fn asked(l: &Lake, who: &Principal, ty: Option<&str>) -> lakelands_api::Result<PurgeReport> {
+    let (crm, ty) = (SourceId::from("crm"), ty.map(TypeName::from));
+    l.cat.purge_preflight(who, &crm, ty.as_ref()).await
+}
+
+async fn a_principal_asks_a_purges_report_as_a_write_is_judged(store: Store) -> Held {
+    use super::only::{holder, not_found, not_granted};
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let mut lines = type_decl("log_line", vec![sourced("text", StorageKind::Text)]);
+    lines.field_meta = false;
+    l.declare(lines).await?;
+    let crm = SourceId::from("crm");
+    let host = store.purge_preflight(&crm, None).await;
+    let host = host.must("the host's preflight of `crm`")?;
+    let before = store.head().await.must("reading the head")?;
+    let s = store.as_ref();
+    let writer = holder(s, "writer", json!({"default": "write"}));
+    let narrow = json!({"default": "write", "types": {"log_line": {"default": "none"}}});
+    let narrow = holder(s, "narrow", narrow);
+    let shape = |r: &PurgeReport| {
+        let unsearched: Vec<String> = r.unsearched.iter().map(|t| t.to_string()).collect();
+        let types: Vec<(String, u32)> =
+            per(r).into_iter().map(|(t, n)| (t.to_owned(), n)).collect();
+        (r.retired, types, unsearched, r.references.len())
+    };
+    let mut want = shape(&host);
+    for (who, unsearched) in [(&writer, want.2.clone()), (&narrow, vec![])] {
+        want.2 = unsearched;
+        let got = asked(&l, who, None).await;
+        let got = shape(&got.must(&format!("`{}` asking the preflight of `crm`", who.id))?);
+        ensure!(
+            got == want,
+            "`{}` may retire all `crm` brought in and asked its preflight: (retired, types, \
+             unsearched, references) {want:?} was expected, the host's narrowed to what it is \
+             shown, and it was answered {got:?}",
+            who.id
+        );
+    }
+    let reader = holder(s, "reader", json!({"default": "read"}));
+    not_granted(
+        "the preflight of `crm` asked by a reader",
+        asked(&l, &reader, None).await,
+    )?;
+    let blind = json!({"default": "write", "types": {"partner": {"default": "none"}}});
+    let blind = holder(s, "blind", blind);
+    not_granted(
+        "the preflight of `crm` asked by one not shown `partner`, which it takes from",
+        asked(&l, &blind, None).await,
+    )?;
+    not_found(
+        "the preflight of `crm` from `partner` asked by one not shown `partner`",
+        asked(&l, &blind, Some("partner")).await,
+    )?;
+    head_unmoved(store.as_ref(), before, "a principal's preflight").await
 }

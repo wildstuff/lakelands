@@ -824,7 +824,8 @@ fn report_of(
             }
         }
     }
-    let references = crate::purge::report(view, ontology, (&g.source, None), &retire, Vec::new())?;
+    let references =
+        crate::purge::report(view, ontology, (&g.source, None, None), &retire, Vec::new())?;
     let log_events = head.map_or(0, |p| p.0);
     Ok(RemoveReport {
         source: g.source.clone(),

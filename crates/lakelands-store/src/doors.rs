@@ -918,6 +918,24 @@ impl Catalog for Doors {
         self.read(who, (ReadAt::default(), None), read).await
     }
 
+    async fn purge_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<PurgeReport> {
+        writes::check_source(source)?;
+        same_lake(&self.lake, who)?;
+        let (lake, who, source, ty) = (self.lake.clone(), who.clone(), source.clone(), ty.cloned());
+        let context = self.context.clone();
+        exec::run(move || {
+            let (who, ..) = seen(&lake, who)?;
+            writes::check_context(&lake, &context, &who)?;
+            crate::purge::preflight(&lake, &source, ty.as_ref(), Some(&who))
+        })
+        .await
+    }
+
     async fn upsert(
         &self,
         who: &Principal,
@@ -1475,7 +1493,7 @@ impl LakeStore for Store {
     ) -> Result<PurgeReport> {
         writes::check_source(source)?;
         let (lake, source, ty) = (self.lake.clone(), source.clone(), ty.cloned());
-        exec::run(move || crate::purge::preflight(&lake, &source, ty.as_ref())).await
+        exec::run(move || crate::purge::preflight(&lake, &source, ty.as_ref(), None)).await
     }
 
     async fn purge_source(
