@@ -123,7 +123,7 @@ pub struct Quarantined {
     /// Whether the refusal holds more than its reader is shown.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub more: bool,
-    /// The host's cause code, never a value, for a record it refused (085).
+    /// The host's cause code for a record it refused, listed to every reader (085).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
     /// Its close, for a closed one.
@@ -187,15 +187,15 @@ impl QuarantineFilter {
     }
 }
 
-/// A record the host refused before any ingest, to be quarantined as one
-/// the lake refused (085, extended): its row as the host would have
-/// ingested it, its cells in `fields`, and the host's refusal.
+/// A record the host refused before any ingest, quarantined as one the lake
+/// refused (085, extended): its row, its cells in `fields`, and the refusal.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostRefused {
     /// The row, its key empty where the host could not form one.
     pub record: crate::SourceRecord,
-    /// The stable cause code: 1 to 64 bytes of `a`–`z`, `0`–`9` and `_`.
+    /// The stable cause code, 1 to 64 bytes of `a`–`z`, `0`–`9` and `_`. It is
+    /// listed to every reader of the row: it holds no cell value and no field name.
     pub cause: String,
     /// The sentence for the operator, which names no cell's value.
     pub reason: String,

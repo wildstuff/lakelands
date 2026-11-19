@@ -244,10 +244,12 @@ the one shape, `refusal`, either way, and `more` tells a reader which
 it holds.
 
 **The host's cause** is listed beside it as `cause`, to every reader
-the row is there to, its refusal whole or its kind alone. The cause is
-a code the host chose from `a`–`z`, `0`–`9` and `_`, never a cell's
-value or a name the lake hides, so it tells a reader nothing its sight
-withholds; the sentence beside it may, and stays inside the refusal.
+the row is there to, its refusal whole or its kind alone. The lake
+checks only its form, 1 to 64 bytes of `a`–`z`, `0`–`9` and `_`. That
+it holds no cell's value and no field's name is the host's duty, which
+`HostRefused::cause` states: the lake cannot tell a code from a value,
+and a reader whose sight withholds both reads it. The sentence beside
+it may name either, and stays inside the refusal.
 A host that works its queue under a narrowed principal reads by it what
 went wrong without reading the queue again as its owner. `cause` is
 read from the refusal the row keeps, at the listing, and nothing is
