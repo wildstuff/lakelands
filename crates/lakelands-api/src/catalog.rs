@@ -411,6 +411,21 @@ pub trait Catalog: Send + Sync {
         let op = "judge".to_owned();
         Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
     }
+
+    /// [`LakeStore::vector_coverage`] as `who` is answered it: the embedding
+    /// fields of `ty` it reads, over the records it is answered
+    /// (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
+    /// It is no tool. A handle that does not count, this default, answers
+    /// it unbound.
+    async fn vector_coverage(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+    ) -> Result<Reply<Vec<crate::read::VectorCoverage>>> {
+        let _ = (who, ty);
+        let op = "vector_coverage".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
 }
 
 /// `ingest` for records already in hand: the records as the source
@@ -540,8 +555,9 @@ pub trait LakeStore: Send + Sync {
 
     /// For each of a type's embedding fields, at the head: how many live
     /// records hold a vector, and how many hold none although they have
-    /// text to embed. The host's, with no door; counting what is due walks
-    /// the type's records without a vector, a page at a time.
+    /// text to embed. The host's; a principal asks [`Catalog::vector_coverage`].
+    /// Counting what is due walks the type's records without a vector, a
+    /// page at a time.
     async fn vector_coverage(&self, ty: &TypeName) -> Result<Vec<crate::read::VectorCoverage>>;
 
     /// Delete the projection and rebuild it from the log. Answers the

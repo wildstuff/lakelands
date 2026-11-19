@@ -905,6 +905,19 @@ impl Catalog for Doors {
         .await
     }
 
+    async fn vector_coverage(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+    ) -> Result<Reply<Vec<lakelands_api::read::VectorCoverage>>> {
+        let ty = ty.clone();
+        let read = move |r: &crate::reads::Reader<'_>| {
+            let decl = r.sight.ty(&ty)?.clone();
+            r.lake.covered(r.view.as_ref(), &decl, Some(r.sight))
+        };
+        self.read(who, (ReadAt::default(), None), read).await
+    }
+
     async fn upsert(
         &self,
         who: &Principal,

@@ -30,6 +30,12 @@ check!(
 );
 
 check!(
+    VECTOR_COVERAGE_ASKED = a_principals_coverage_counts_what_it_is_answered,
+    "022, extended, and 116 (lakelands#1595): a principal asks vector_coverage at the door and is answered the counts of the records it is answered, over the embedding fields it reads: a reader of everything is answered the host's counts, a holder of `only` its own records', one that may not read the field no field, and a type it is not shown is not found",
+    embedding
+);
+
+check!(
     EMBED_WRITE = a_write_embeds_its_text_and_records_the_vector,
     "022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as `output_recorded` under `embed:<model>` naming the field, and the field holds it, its metadata naming the model as its procedure",
     embedding
@@ -1998,4 +2004,57 @@ async fn a_deferred_verb_call_answers_before_its_embedding_and_an_external_one_w
          answered {output:?}"
     );
     Ok(())
+}
+
+/// `(embedded, due)` of `vec` in a coverage answer, or what it answered.
+fn of_vec(c: &[lakelands_api::read::VectorCoverage]) -> Result<(u64, u64), String> {
+    match c {
+        [one] if one.field.as_str() == "vec" => Ok((one.embedded, one.due)),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+async fn a_principals_coverage_counts_what_it_is_answered(store: Store) -> Held {
+    use super::only::{holder, not_found};
+    let l = notes(store.as_ref()).await?;
+    let failing = "Asked harbour failing";
+    unplug_text(failing);
+    for (key, title) in [
+        ("n1", "Asked harbour mine"),
+        ("n2", "Asked harbour theirs"),
+        ("n3", failing),
+        ("n0", ""),
+    ] {
+        l.upsert("note", key, json!({"title": title})).await?;
+    }
+    plug_text(failing);
+    let host = coverage(store.as_ref(), "by the host").await?;
+    let note = TypeName::from("note");
+    let s = store.as_ref();
+    let mine =
+        json!({"default": "read", "types": {"note": {"only": {"title": "Asked harbour mine"}}}});
+    let hidden = json!({"default": "read", "types": {"note": {"default": "none"}}});
+    for (who, want) in [
+        (holder(s, "reader", json!({"default": "read"})), Ok(host)),
+        (holder(s, "mine", mine), Ok((1, 0))),
+        (
+            crate::conformance::fixture::field_access(s, "blind", "note", &[("vec", Access::None)]),
+            Err("[]".to_owned()),
+        ),
+    ] {
+        let asked = l.cat.vector_coverage(&who, &note).await;
+        let got = asked.must(&format!("`{}` asking vector_coverage of `note`", who.id))?;
+        let got = of_vec(&got.data);
+        ensure!(
+            got == want,
+            "`{}` asked vector_coverage of `note`, whose (embedded, due) is {host:?} to the \
+             host, and was answered {got:?}; {want:?} was expected",
+            who.id
+        );
+    }
+    let blind = holder(s, "hidden", hidden);
+    not_found(
+        "vector_coverage of `note` asked by one it is not shown to",
+        l.cat.vector_coverage(&blind, &note).await,
+    )
 }

@@ -150,15 +150,58 @@ impl Lake {
     ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
         let view = self.engine.view(None)?;
         let decl = Ontology::at(view.as_ref())?.ty(ty)?.clone();
-        let mut out = Vec::new();
-        for f in &decl.fields {
-            let Some(embed) = &f.embed else {
-                continue;
-            };
-            let embedded = match self.engine.vectors() {
-                Some(index) => index.count(ty, f.name.as_str())?,
-                None => 0,
-            };
+        self.covered(view.as_ref(), &decl, None)
+    }
+
+    /// [`Self::vector_coverage`] of `decl` in `view`, as the principal of
+    /// `sees` is answered it where one asks: the embedding fields it reads,
+    /// over the records it is answered. One answered every record of the
+    /// type is counted as the host is; else every live record is walked,
+    /// and one is counted embedded where its field holds a vector.
+    pub(crate) fn covered(
+        &self,
+        view: &dyn ProjectionView,
+        decl: &TypeDecl,
+        sees: Option<&Sight>,
+    ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
+        let ty = &decl.name;
+        let read = |f: &&FieldDecl| f.embed.is_some() && sees.is_none_or(|s| s.reads(ty, &f.name));
+        let fields: Vec<&FieldDecl> = decl.fields.iter().filter(read).collect();
+        let mut out: Vec<_> = (fields.iter())
+            .map(|f| lakelands_api::read::VectorCoverage {
+                field: f.name.clone(),
+                embedded: 0,
+                due: 0,
+            })
+            .collect();
+        let narrowed = sees.filter(|s| !s.sees_all() || s.narrows(ty));
+        let embed = |f: &FieldDecl, r: &StoredRecord| {
+            let embed = f.embed.as_ref().expect("an embedding field");
+            crate::backed::embed_text(embed, &r.fields).is_some()
+        };
+        if let Some(sees) = narrowed
+            && !fields.is_empty()
+        {
+            crate::lake::walk(view, ty, false, |r| {
+                if !crate::reads::answered_rows(view, sees, decl, &[&r])?[0] {
+                    return Ok(());
+                }
+                let r = sees.told(&r).expect("an answered record is told");
+                for (f, n) in fields.iter().zip(out.iter_mut()) {
+                    if r.fields.get(&f.name).is_some_and(|v| !v.is_null()) {
+                        n.embedded += 1;
+                    } else if embed(f, &r) {
+                        n.due += 1;
+                    }
+                }
+                Ok(())
+            })?;
+            return Ok(out);
+        }
+        for (f, n) in fields.iter().zip(out.iter_mut()) {
+            if let Some(index) = self.engine.vectors() {
+                n.embedded = index.count(ty, f.name.as_str())?;
+            }
             let mut scan = lakelands_api::engine::Scan {
                 filter: Some(lakelands_api::expr::Expr::IsNull {
                     arg: Box::new(lakelands_api::expr::Expr::Path {
@@ -169,13 +212,9 @@ impl Lake {
                 restricted: true,
                 ..Default::default()
             };
-            let mut due = 0;
             loop {
                 let rows = view.scan(ty, &scan)?;
-                due += rows
-                    .iter()
-                    .filter(|r| crate::backed::embed_text(embed, &r.fields).is_some())
-                    .count() as u64;
+                n.due += rows.iter().filter(|r| embed(f, r)).count() as u64;
                 match rows.last() {
                     Some(last) if rows.len() == PAGE as usize => {
                         scan.after = Some(lakelands_api::engine::After {
@@ -186,11 +225,6 @@ impl Lake {
                     _ => break,
                 }
             }
-            out.push(lakelands_api::read::VectorCoverage {
-                field: f.name.clone(),
-                embedded,
-                due,
-            });
         }
         Ok(out)
     }

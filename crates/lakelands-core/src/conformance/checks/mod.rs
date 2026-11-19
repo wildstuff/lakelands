@@ -928,6 +928,7 @@ pub const ALL: &[Check] = &[
     reached::ACT_WHOLE_FOLLOWS_ITS_PARTS_FIRED,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
+    embeddings::VECTOR_COVERAGE_ASKED,
     embeddings::EMBED_ONCE,
     embeddings::EMBED_REBUILD,
     embeddings::EMBED_OTHER_MODEL,

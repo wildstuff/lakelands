@@ -1588,6 +1588,7 @@ interface types {
     record migration-report-reply { position: position, data: migration-report }
     record thin-reply { position: position, data: thin-report }
     record judge-reply { position: position, data: judge-report }
+    record vector-coverage-reply { position: position, data: list<vector-coverage> }
 
     /// What a change to the ontology would do, before it does it (062).
     record plan {
