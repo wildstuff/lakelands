@@ -434,6 +434,9 @@ pub(crate) fn untold_setting(sees: &Sight<'_>, decl: &TypeDecl, key: &RecordKey)
 /// (lakelands#1148).
 pub(crate) fn retires(sees: &Sight<'_>, door: Door, o: &Ontology, decl: &TypeDecl) -> Result<()> {
     not_a_view(decl)?;
+    // Pinned at the retire door by a_holder_of_writes_only_writes_its_records_alone;
+    // the purge preflight answers this case not granted by construction
+    // (`Sight::writes` answers `Admit::Nothing`), so it cannot pin it.
     sees.check_writes_only(decl)?;
     granted(sees.may_retire(decl))?;
     if door.admits_retirement(decl.retired_by) {
