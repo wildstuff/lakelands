@@ -227,31 +227,11 @@ impl Decide<'_> {
         expected: Option<Version>,
     ) -> Result<Plan> {
         let decl = self.ontology.ty(ty)?;
-        self.retires(decl)?;
-        untold_setting(&self.at.sight, decl, key)?;
-        let before = self.reached(decl, key, expected)?;
-        // A holder of `writes_only` retires only a record holding its pairs,
-        // a link's own record on its link type for an unlink (006).
-        granted(
-            self.at
-                .sight
-                .writes_record(decl, Some(&before.fields), None),
-        )?;
+        let judge = (&self.at.sight, self.door, self.ontology);
+        let before = judge_retire(judge, decl, key, || self.reached(decl, key, expected))?;
         let own = self.draft(retirement(ty, key, before.version));
         let (drafts, after) = (self.retiring(&before, own)?, None);
         Ok(Plan { drafts, after })
-    }
-
-    /// Whether the judged principal may retire a record of `decl`, then
-    /// whether this door retires it, before a record is read.
-    fn retires(&self, decl: &TypeDecl) -> Result<()> {
-        not_a_view(decl)?;
-        self.at.sight.check_writes_only(decl)?;
-        granted(self.at.sight.may_retire(decl))?;
-        match self.door.admits_retirement(decl.retired_by) {
-            true => Ok(()),
-            false => Err(self.retired_by_verbs(decl)),
-        }
     }
 
     /// What [`Self::plan`] refuses of `op` before a record is read, in its
@@ -273,7 +253,7 @@ impl Decide<'_> {
         };
         let decl = self.ontology.ty(ty)?;
         match patch {
-            None => self.retires(decl).map(|()| Patch::new()),
+            None => retires(&self.at.sight, self.door, self.ontology, decl).map(|()| Patch::new()),
             Some(p) if p.is_empty() => Err(Error::invalid(Case::PatchEmpty)),
             Some(p) => self.values(decl, p),
         }
@@ -409,22 +389,6 @@ impl Decide<'_> {
         match decl.fields.iter().any(ours) && !verbs.is_empty() {
             true => Error::refused(Some(field.clone()), Refusal::VerbsOnly { verbs }),
             false => e,
-        }
-    }
-
-    /// A retirement of a type only its verbs retire, refused at another
-    /// door: named the verbs that retire it which its writer is shown and
-    /// may call, else `wrong_door`, whatever the key (lakelands#1148).
-    fn retired_by_verbs(&self, decl: &TypeDecl) -> Error {
-        let sees = &self.at.sight;
-        let verbs: Vec<VerbName> = (self.ontology.verbs.values().map(|e| &e.decl))
-            .filter(|v| v.on == decl.name && matches!(v.effect, VerbEffect::Retire))
-            .filter(|v| sees.verb_shown(v))
-            .map(|v| v.name.clone())
-            .collect();
-        match verbs.is_empty() {
-            true => Error::refused(None, Refusal::WrongDoor),
-            false => Error::refused(None, Refusal::VerbsOnly { verbs }),
         }
     }
 
