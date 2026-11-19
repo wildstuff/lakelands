@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use lakelands_api::write::{Change, ChangeTo, RemoveReport, ValueTypeMigration};
 
 use super::only::de;
-use super::removed::{acts, at, erased};
+use super::removed::{acts, at, erased, tracked};
 use crate::conformance::fixture::source_record;
 use crate::conformance::prelude::*;
 use crate::export;
@@ -82,17 +82,6 @@ async fn visits(l: &Lake) -> Held {
                    {"name": "duration", "type": {"kind": "number"}, "authority": "source"},
                    {"name": "note", "type": text}]}))
         .await?;
-    Ok(())
-}
-
-/// `tracker`'s visits, each with its `duration`.
-async fn tracked(l: &Lake, visits: &[(&str, u32)]) -> Held {
-    let records = (visits.iter())
-        .map(|(k, d)| source_record("visit", k, json!({"id": k, "duration": d})))
-        .collect();
-    l.ingest("tracker", records)
-        .await
-        .must("ingesting from tracker")?;
     Ok(())
 }
 

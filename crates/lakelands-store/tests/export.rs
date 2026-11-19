@@ -6,6 +6,8 @@
 //! The test needs `python3`, which CI has for the conformance page; a run
 //! without it fails saying so, never passes quietly.
 
+mod probed;
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -21,6 +23,7 @@ use lakelands_api::{
 };
 use lakelands_core::export::SegmentFile;
 use lakelands_engine_mem::MemoryOpener;
+use probed::until;
 use serde_json::{Value, json};
 
 fn account(key: &str) -> Value {
@@ -517,17 +520,4 @@ async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
         refused.is_err_and(|e| e.contains("ImportNotEmpty")),
         "a second import onto the lake is refused as not empty: {again:?}"
     );
-}
-
-/// Wait until `done`, for a row that needs the road beside the writer to
-/// have got somewhere.
-async fn until(done: impl Fn() -> bool) {
-    for _ in 0..5_000 {
-        if done() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        tokio::task::yield_now().await;
-    }
-    panic!("waited five seconds");
 }

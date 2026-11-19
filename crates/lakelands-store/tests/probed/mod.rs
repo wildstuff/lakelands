@@ -25,7 +25,7 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore,
     ProjectionView, Ranked, Rankings, Reclaimed, Scan, VectorIndex,
 };
-use lakelands_api::event::{Digest, EventId, SegmentDigest};
+use lakelands_api::event::{Digest, EventBody, EventId, SegmentDigest};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
@@ -730,4 +730,38 @@ fn planted() -> Error {
     Error::invalid(lakelands_api::error::Case::Undeclared {
         ty: "planted".into(),
     })
+}
+
+/// Wait until `done`, for a row that needs another task, or the road
+/// beside the writer, to have got somewhere.
+pub async fn until(done: impl Fn() -> bool) {
+    for _ in 0..5_000 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        tokio::task::yield_now().await;
+    }
+    panic!("waited five seconds");
+}
+
+/// The event that writes `fields` to `ty`/`key` at `version`.
+pub fn wrote(ty: &str, key: &str, version: u64, fields: serde_json::Value) -> EventBody {
+    EventBody::RecordUpserted {
+        ty: ty.into(),
+        key: key.into(),
+        version: lakelands_api::Version(version),
+        patch: lakelands_core::conformance::fixture::patch(fields),
+        made: false,
+    }
+}
+
+/// The lake's owner, a person granted everything.
+pub fn owner(lake: &str) -> lakelands_api::Principal {
+    lakelands_api::Principal {
+        kind: lakelands_api::PrincipalKind::Human,
+        id: "owner".into(),
+        lake: lake.into(),
+        grants: lakelands_api::Grants::owner(),
+    }
 }

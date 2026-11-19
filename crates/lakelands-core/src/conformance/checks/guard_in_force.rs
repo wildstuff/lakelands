@@ -792,7 +792,7 @@ fn fed_tick(key: &str, symbol: &str, hm: &str, price: f64) -> SourceRecord {
 }
 
 /// The constraint an answer breaks, if it breaks one.
-fn broke(a: &impl Answer) -> Option<String> {
+pub(super) fn broke(a: &impl Answer) -> Option<String> {
     let Some(Refusal::Constraint(said)) = reason(a) else {
         return None;
     };

@@ -7,26 +7,13 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::Location;
-use lakelands_api::Version;
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode, ProjectionStore};
 use lakelands_api::id::{Position, RecordKey, TypeName};
-use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::order_name;
 use serde_json::json;
 
 use super::{Plan, Scope, Scoped};
-
-/// A record of `ty` at `key` at `at`, with `fields`.
-fn record(ty: &str, key: &str, fields: serde_json::Value, at: u64) -> StoredRecord {
-    let fields = serde_json::from_value(fields).unwrap();
-    StoredRecord {
-        fields,
-        version: Version(3),
-        position: Position(at),
-        retired: false,
-        ..StoredRecord::ended(ty.into(), key.into(), Position(at))
-    }
-}
+use crate::lake::tests::record;
 
 /// A scoped refold writes the page's records and outputs alone: an order
 /// entry put or a name ended under a scope leaves the engine's order as

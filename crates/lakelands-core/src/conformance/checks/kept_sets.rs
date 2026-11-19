@@ -5,6 +5,7 @@
 
 use lakelands_api::seam::AGING_RULE_TYPE;
 
+use super::sets_across::{next, rows};
 use crate::conformance::fixture::{ingest, source_record};
 use crate::conformance::prelude::*;
 
@@ -176,18 +177,6 @@ async fn moved(
     }
     out.sort();
     Ok((out, caused))
-}
-
-fn rows(r: &[(&str, &str, bool)]) -> Vec<(String, String, bool)> {
-    let mut r: Vec<_> = (r.iter())
-        .map(|(s, k, j)| ((*s).to_owned(), (*k).to_owned(), *j))
-        .collect();
-    r.sort();
-    r
-}
-
-async fn next(s: &dyn LakeStore) -> Result<Position, Failure> {
-    Ok(s.head().await.must("the head")?.next())
 }
 
 /// One step of a walk: what it moves, caused by its event, and the oracle

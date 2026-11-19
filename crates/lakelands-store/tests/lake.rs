@@ -4,6 +4,8 @@
 //! migrations over history, search paging and embedding, and the
 //! declarations the door refuses.
 
+mod probed;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -27,6 +29,7 @@ use lakelands_api::{
 };
 use lakelands_core::conformance::fixture::{invalid_case, searched};
 use lakelands_engine_mem::MemoryOpener;
+use probed::owner;
 use serde_json::json;
 
 fn name() -> String {
@@ -50,15 +53,6 @@ fn seams() -> Seams {
 
 async fn open(lake: &str, mode: OpenMode) -> lakelands_api::Result<Arc<dyn LakeStore>> {
     lakelands_store::open(Location::memory(lake), seams(), mode).await
-}
-
-fn owner(lake: &str) -> Principal {
-    Principal {
-        kind: PrincipalKind::Human,
-        id: "owner".into(),
-        lake: lake.into(),
-        grants: Grants::owner(),
-    }
 }
 
 fn field(name: &str, kind: StorageKind) -> FieldDecl {
