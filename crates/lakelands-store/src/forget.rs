@@ -1615,19 +1615,9 @@ impl Forget {
         drafts: Vec<Draft>,
     ) -> Result<(Vec<Draft>, bool)> {
         let act = self.act.expect("a part follows the act's beginning");
-        crate::parts::part(
-            lake,
-            (w, view),
-            now,
-            room,
-            drafts,
-            crate::parts::Part {
-                closes: &mut self.closes,
-                taken: &mut self.retire,
-                kind: ChangeKind::Forgotten,
-                act,
-            },
-        )
+        let held = (&mut self.closes, &mut self.retire);
+        let kind = (ChangeKind::Forgotten, act);
+        crate::parts::part(lake, (w, view), now, room, drafts, held, kind)
     }
 
     /// Read the keys the tail moved again, as they stand under the writer,

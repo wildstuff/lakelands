@@ -345,6 +345,18 @@ pub(crate) fn holds_at(n: usize) -> String {
     format!("since <= ?{n} AND (until IS NULL OR until > ?{n})")
 }
 
+/// End the transaction `done` ran in: committed where it held, rolled
+/// back where it failed.
+fn ended<T>(conn: &Connection, done: Result<T>) -> Result<T> {
+    match done {
+        Ok(v) => conn.execute_batch("COMMIT").map(|()| v).map_err(sql),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
 /// Run one cached statement.
 pub(crate) fn run(conn: &Connection, statement: &str, args: impl Params) -> Result<()> {
     conn.prepare_cached(statement)
@@ -844,13 +856,7 @@ pub(crate) fn choose_order(
             Ok(None)
         }
     })();
-    match done {
-        Ok(next) => conn.execute_batch("COMMIT").map(|()| next).map_err(sql),
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
+    ended(conn, done)
 }
 
 /// The field a step of choosing names.
@@ -939,13 +945,7 @@ fn choose_series(
             }
         }
     })();
-    match done {
-        Ok(next) => conn.execute_batch("COMMIT").map(|()| next).map_err(sql),
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
+    ended(conn, done)
 }
 
 /// One step of building the exact-text index a `lookup_index.<type>`
@@ -992,13 +992,7 @@ pub(crate) fn look_index(
             }
         }
     })();
-    match done {
-        Ok(next) => conn.execute_batch("COMMIT").map(|()| next).map_err(sql),
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
+    ended(conn, done)
 }
 
 /// Write the rows of `fields` for up to `limit` head records of `ty` after
@@ -1274,13 +1268,7 @@ pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
             (behind.iter())
                 .try_for_each(|ty| rebuild_sorted(conn, &TypeName::from(ty.as_str()), folded))
         });
-    match rebuilt {
-        Ok(()) => conn.execute_batch("COMMIT").map_err(sql),
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
+    ended(conn, rebuilt)
 }
 
 /// Record that every order index the lake keeps is kept through
@@ -1843,33 +1831,8 @@ fn mark_series(conn: &Connection, ty: &TypeName) -> Result<()> {
         .map(|d| engines::series_pairs(d, setting.as_ref().and_then(engines::setting_value)))
         .unwrap_or_default();
     let mut state = series_state(conn, ty)?;
-    // A pair the setting no longer names is taken back: its rows go in the
-    // writer's turn, as a `Drop` does, so none is left without a pair.
-    let gone: Vec<_> = state
-        .kept
-        .iter()
-        .chain(state.building.iter())
-        .filter(|p| !named.contains(p))
-        .cloned()
-        .collect();
-    for pair in &gone {
-        let field = FieldName::from(lakelands_api::seam::series_field(
-            pair.order.as_str(),
-            pair.series.as_str(),
-        ));
+    for field in engines::mark_pairs(&mut state, named) {
         let _ = drop_chosen(conn, ty, &field, None, u32::MAX)?;
-    }
-    state.kept.retain(|p| named.contains(p));
-    state.building.retain(|p| named.contains(p));
-    let mut started = false;
-    for pair in named {
-        if !state.kept.contains(&pair) && !state.building.contains(&pair) {
-            state.building.push(pair);
-            started = true;
-        }
-    }
-    if started {
-        state.started += 1;
     }
     set_series(conn, ty, &state)
 }
@@ -2257,13 +2220,7 @@ pub(crate) fn catch_up_text_stats(conn: &Connection) -> Result<()> {
             params![TEXT_STATS, folded],
         )
     })();
-    match counted {
-        Ok(()) => conn.execute_batch("COMMIT").map_err(sql),
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
+    ended(conn, counted)
 }
 
 /// The counts of `ty`'s fields over its live heads that are not held,

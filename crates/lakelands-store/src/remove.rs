@@ -1874,19 +1874,9 @@ impl Remove {
         drafts: Vec<Draft>,
     ) -> Result<(Vec<Draft>, bool)> {
         let act = self.act.expect("a part follows the act's beginning");
-        crate::parts::part(
-            lake,
-            (w, view),
-            now,
-            room,
-            drafts,
-            crate::parts::Part {
-                closes: &mut self.closes,
-                taken: &mut self.retire,
-                kind: lakelands_api::event::ChangeKind::Retired,
-                act,
-            },
-        )
+        let held = (&mut self.closes, &mut self.retire);
+        let kind = (lakelands_api::event::ChangeKind::Retired, act);
+        crate::parts::part(lake, (w, view), now, room, drafts, held, kind)
     }
 }
 

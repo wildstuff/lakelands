@@ -1530,33 +1530,8 @@ pub(crate) fn mark_series(db: &mut Db, names: &Names, ty: &TypeName) -> Result<(
     )?;
     let named = engines::series_pairs(&decl, setting.as_ref().and_then(engines::setting_value));
     let mut state = series_of(db, names, ty)?;
-    // A pair the setting no longer names is taken back: its rows go in the
-    // writer's turn, as a `Drop` does, so none is left without a pair.
-    let gone: Vec<_> = state
-        .kept
-        .iter()
-        .chain(state.building.iter())
-        .filter(|p| !named.contains(p))
-        .cloned()
-        .collect();
-    for pair in &gone {
-        let field = FieldName::from(lakelands_api::seam::series_field(
-            pair.order.as_str(),
-            pair.series.as_str(),
-        ));
+    for field in engines::mark_pairs(&mut state, named) {
         let _ = drop_chosen(db, names, ty, &field, None, u32::MAX)?;
-    }
-    state.kept.retain(|p| named.contains(p));
-    state.building.retain(|p| named.contains(p));
-    let mut started = false;
-    for pair in named {
-        if !state.kept.contains(&pair) && !state.building.contains(&pair) {
-            state.building.push(pair);
-            started = true;
-        }
-    }
-    if started {
-        state.started += 1;
     }
     set_series(db, names, ty, &state)
 }

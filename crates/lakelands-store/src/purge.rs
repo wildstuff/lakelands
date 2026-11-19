@@ -994,19 +994,9 @@ impl Purge {
         room: usize,
     ) -> Result<(Vec<Draft>, bool)> {
         let act = self.act.expect("a part follows the act's beginning");
-        crate::parts::part(
-            lake,
-            (w, view),
-            now,
-            room,
-            Vec::new(),
-            crate::parts::Part {
-                closes: &mut self.closes,
-                taken: &mut self.taken,
-                kind: ChangeKind::Purged,
-                act,
-            },
-        )
+        let held = (&mut self.closes, &mut self.taken);
+        let kind = (ChangeKind::Purged, act);
+        crate::parts::part(lake, (w, view), now, room, Vec::new(), held, kind)
     }
 
     /// One turn beside the writer, as [`Job::turn`] describes: the act's

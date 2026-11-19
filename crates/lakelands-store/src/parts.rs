@@ -21,15 +21,13 @@ use crate::lake::{Lake, Writer};
 use crate::log::Draft;
 use crate::writes;
 
-/// What a part carries: the closes still owed, the records still to
-/// retire, the change each retirement is caused as — a purge's `Purged`,
-/// a removal's `Retired` — and the act they belong to.
-pub(crate) struct Part<'a> {
-    pub closes: &'a mut VecDeque<EventBody>,
-    pub taken: &'a mut BTreeMap<(TypeName, RecordKey), StoredRecord>,
-    pub kind: ChangeKind,
-    pub act: Position,
-}
+/// What a part carries: the closes still owed and the records still to
+/// retire. Beside it go the change each retirement is caused as — a
+/// purge's `Purged`, a removal's `Retired` — and the act they belong to.
+pub(crate) type Held<'a> = (
+    &'a mut VecDeque<EventBody>,
+    &'a mut BTreeMap<(TypeName, RecordKey), StoredRecord>,
+);
 
 /// The closes of the act's first turn that fit in `room` beside its
 /// opening event; the rest stay owed to the parts.
@@ -50,14 +48,9 @@ pub(crate) fn part(
     now: Timestamp,
     room: usize,
     mut drafts: Vec<Draft>,
-    part: Part<'_>,
+    (closes, taken): Held<'_>,
+    (kind, act): (ChangeKind, Position),
 ) -> Result<(Vec<Draft>, bool)> {
-    let Part {
-        closes,
-        taken,
-        kind,
-        act,
-    } = part;
     let system = lake.system("lakelands");
     let asked = writes::Asked {
         lake,
