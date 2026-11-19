@@ -62,7 +62,7 @@ use lakelands_api::{
 };
 
 use lakelands_core::links;
-use lakelands_core::sight::Sight;
+use lakelands_core::sight::{Door, Sight};
 
 use crate::exec::Turn;
 use crate::lake::{Lake, PAGE, Staged, Writer, every, owing_now};
@@ -695,11 +695,10 @@ pub fn preflight(
         .flat_map(|s| out.taken.iter().map(move |r| (s, r)))
     {
         let decl = s.ty(&r.ty).map_err(|_| Error::not_granted())?;
-        s.check_writes_only(decl)?;
         let held = crate::reads::answered_rows(view.as_ref(), s, decl, &[r])?[0];
-        writes::granted(
-            held && s.may_retire(decl) && s.writes_record(decl, Some(&r.fields), None),
-        )?;
+        let reach = || held.then(|| r.clone()).ok_or_else(Error::not_granted);
+        let at = (s, Door::Authored, &w.ontology);
+        writes::judge_retire(at, decl, &r.key, reach).map_err(|_| Error::not_granted())?;
     }
     judged(&out, (source, ty), &window)?;
     let mut report = report(

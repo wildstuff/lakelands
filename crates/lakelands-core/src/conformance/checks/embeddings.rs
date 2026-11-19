@@ -31,7 +31,7 @@ check!(
 
 check!(
     VECTOR_COVERAGE_ASKED = a_principals_coverage_counts_what_it_is_answered,
-    "022, extended, and 116 (lakelands#1595): a principal asks vector_coverage at the door and is answered the counts of the records it is answered, over the embedding fields it reads: a reader of everything is answered the host's counts, a holder of `only` its own records', one that may not read the field no field, and a type it is not shown is not found",
+    "022, extended, and 116 (lakelands#1595): a principal asks vector_coverage at the door and is answered the counts of the records it is answered, over the embedding fields it reads: a reader of everything is answered the host's counts, a holder of `only` its own records', one with a record's vector hidden that record as due, one that may not read the field no field, and a type it is not shown is not found",
     embedding
 );
 
@@ -2034,9 +2034,14 @@ async fn a_principals_coverage_counts_what_it_is_answered(store: Store) -> Held 
     let mine =
         json!({"default": "read", "types": {"note": {"only": {"title": "Asked harbour mine"}}}});
     let hidden = json!({"default": "read", "types": {"note": {"default": "none"}}});
+    let theirs =
+        json!({"field": "title", "values": ["Asked harbour theirs"], "fields": {"vec": "none"}});
+    let lowered =
+        json!({"default": "read", "restricted": true, "types": {"note": {"hide_where": [theirs]}}});
     for (who, want) in [
         (holder(s, "reader", json!({"default": "read"})), Ok(host)),
         (holder(s, "mine", mine), Ok((1, 0))),
+        (holder(s, "lowered", lowered), Ok((1, 2))),
         (
             crate::conformance::fixture::field_access(s, "blind", "note", &[("vec", Access::None)]),
             Err("[]".to_owned()),

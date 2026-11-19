@@ -1287,7 +1287,7 @@ async fn a_purge_names_the_records_outside_it_that_refer_into_it(store: Store) -
 
 check!(
     PREFLIGHT_ASKED = a_principal_asks_a_purges_report_as_a_write_is_judged,
-    "039 and 116 (lakelands#1594): a principal asks `purge_preflight` at the door, under the door's write context; one that may retire every record the purge would take is answered the host's report narrowed to what it is shown, so a type without provenance it is not shown is not named; one that may not, or is not shown a type the purge would take from, is refused not granted, and a purge from a type it is not shown is not found; asking appends nothing"
+    "039 and 116 (lakelands#1594): a principal asks `purge_preflight` at the door, under the door's write context; one that may retire every record the purge would take is answered the host's report narrowed to what it is shown: references by a relation or link type it is not shown, from a record it is not answered or through a field it does not read, moved values of a field it does not read, and unsearched types and quarantined rows of a type it is not shown are left out; one that is not answered a record, may not write it as it stands, cannot have its writes_only applied, or asks of a type only verbs retire, is refused not granted, and a purge from a type it is not shown is not found; asking appends nothing"
 );
 
 check!(
@@ -2022,60 +2022,137 @@ async fn a_rebuild_after_a_purge_answers_the_same_lake(store: Store) -> Held {
     Ok(())
 }
 
-/// `crm`'s report asked at the door by `who`, of `ty` where one is named.
-async fn asked(l: &Lake, who: &Principal, ty: Option<&str>) -> lakelands_api::Result<PurgeReport> {
-    let (crm, ty) = (SourceId::from("crm"), ty.map(TypeName::from));
-    l.cat.purge_preflight(who, &crm, ty.as_ref()).await
+/// A report's retired count and its types, unsearched types, references,
+/// moved values and quarantined types, each as words.
+type Shape = (u32, [Vec<String>; 5]);
+
+fn shape(r: &PurgeReport) -> Shape {
+    let (moved, refs) = (r.moved.iter(), r.references.iter());
+    let ours = [
+        per(r)
+            .into_iter()
+            .map(|(t, n)| format!("{t} {n}"))
+            .collect(),
+        r.unsearched.iter().map(ToString::to_string).collect(),
+        refs.map(|f| format!("{} {}", f.ty, f.relation)).collect(),
+        moved.map(|m| format!("{} {}", m.ty, m.field)).collect(),
+        r.quarantined.iter().map(|q| q.ty.to_string()).collect(),
+    ];
+    (r.retired, ours)
 }
 
 async fn a_principal_asks_a_purges_report_as_a_write_is_judged(store: Store) -> Held {
     use super::only::{holder, not_found, not_granted};
+    use super::quarantine::{fed, kept};
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let mut lines = type_decl("log_line", vec![sourced("text", StorageKind::Text)]);
     lines.field_meta = false;
     l.declare(lines).await?;
-    let crm = SourceId::from("crm");
-    let host = store.purge_preflight(&crm, None).await;
-    let host = host.must("the host's preflight of `crm`")?;
+    // What a report names beside the records: a link and a `via` field
+    // into `p1`, an author's value in a field with an `initial`, and a
+    // quarantined row; `badge` is retired by its verbs alone.
+    let src = |name: &str, ty: Value| json!({"name": name, "type": ty, "authority": "source"});
+    let about = json!({"name": "about", "target": "partner", "via": "who"});
+    let stage = json!({"name": "stage", "type": {"kind": "text"}, "initial": "new"});
+    for (name, fields, relations, by) in [
+        (
+            "ticket",
+            json!([src(
+                "who",
+                json!({"kind": "reference", "target": "partner"})
+            )]),
+            json!([about]),
+            "authors",
+        ),
+        (
+            "lead",
+            json!([src("name", json!({"kind": "text"})), stage]),
+            json!([]),
+            "authors",
+        ),
+        (
+            "badge",
+            json!([src("name", json!({"kind": "text"}))]),
+            json!([]),
+            "verbs",
+        ),
+    ] {
+        let decl = json!({"declare": "type", "name": name, "fields": fields, "relations": relations, "retired_by": by});
+        l.declare_json(decl).await?;
+    }
+    let lt = link_type_name(&"invoice".into(), &"approved_by".into());
+    let link = json!({"from": "i1", "to": "p1"});
+    let key = link_key(&"i1".into(), &"p1".into());
+    feed_one(&l, "registry", lt.as_str(), key.as_str(), link).await?;
+    feed_one(&l, "erp", "ticket", "t1", json!({"who": "p1"})).await?;
+    feed_one(&l, "crm", "lead", "l1", json!({"name": "Ada"})).await?;
+    l.upsert("lead", "l1", json!({"stage": "won"})).await?;
+    feed_one(&l, "hr", "badge", "b1", json!({"name": "Ada"})).await?;
+    let row = source_record("log_line", "q1", json!({"nope": "x"}));
+    let kept = fed(&l, &l.own, "crm", kept("q"), vec![row]).await;
+    kept.map_err(|e| Failure::new(format!("quarantining `q1`: {e:?}")))?;
+    let host = store.purge_preflight(&"crm".into(), None).await;
+    let host = shape(&host.must("the host's preflight of `crm`")?);
+    ensure!(
+        host.1[2..].iter().map(Vec::len).eq([2, 1, 1]),
+        "the host's preflight of `crm` names two references, a moved value and a quarantined \
+         type: {host:?}"
+    );
     let before = store.head().await.must("reading the head")?;
     let s = store.as_ref();
-    let writer = holder(s, "writer", json!({"default": "write"}));
-    let narrow = json!({"default": "write", "types": {"log_line": {"default": "none"}}});
-    let narrow = holder(s, "narrow", narrow);
-    let shape = |r: &PurgeReport| {
-        let unsearched: Vec<String> = r.unsearched.iter().map(|t| t.to_string()).collect();
-        let types: Vec<(String, u32)> =
-            per(r).into_iter().map(|(t, n)| (t.to_owned(), n)).collect();
-        (r.retired, types, unsearched, r.references.len())
-    };
-    let mut want = shape(&host);
-    for (who, unsearched) in [(&writer, want.2.clone()), (&narrow, vec![])] {
-        want.2 = unsearched;
-        let got = asked(&l, who, None).await;
+    let narrow = json!({"default": "write", "types": {"log_line": {"default": "none"},
+        "lead": {"fields": {"stage": "write_only"}}, "ticket": {"fields": {"who": "none"}},
+        lt.as_str(): {"default": "none"}}});
+    let scoped = json!({"default": "write", "types": {"ticket": {"only": {"who": "p2"}}}});
+    let narrowed = (host.0, [host.1[0].clone(), vec![], vec![], vec![], vec![]]);
+    let mut unscoped = host.clone();
+    unscoped.1[2].retain(|f| f != "ticket about");
+    for (who, want) in [
+        (holder(s, "writer", json!({"default": "write"})), host),
+        (holder(s, "narrow", narrow), narrowed),
+        (holder(s, "scoped", scoped), unscoped),
+    ] {
+        let got = l.cat.purge_preflight(&who, &"crm".into(), None).await;
         let got = shape(&got.must(&format!("`{}` asking the preflight of `crm`", who.id))?);
         ensure!(
             got == want,
             "`{}` may retire all `crm` brought in and asked its preflight: (retired, types, \
-             unsearched, references) {want:?} was expected, the host's narrowed to what it is \
-             shown, and it was answered {got:?}",
+             unsearched, references, moved, quarantined) {want:?} was expected, the host's \
+             narrowed to what it is shown, and it was answered {got:?}",
             who.id
         );
     }
-    let reader = holder(s, "reader", json!({"default": "read"}));
-    not_granted(
-        "the preflight of `crm` asked by a reader",
-        asked(&l, &reader, None).await,
-    )?;
-    let blind = json!({"default": "write", "types": {"partner": {"default": "none"}}});
-    let blind = holder(s, "blind", blind);
-    not_granted(
-        "the preflight of `crm` asked by one not shown `partner`, which it takes from",
-        asked(&l, &blind, None).await,
-    )?;
+    let ty = |ty: &str, grant: Value| json!({"default": "write", "types": {ty: grant}});
+    let (harbor, one) = (json!({"name": "Harbor"}), json!({"amount": "1"}));
+    for (id, grant, source) in [
+        ("reader", json!({"default": "read"}), "crm"),
+        ("blind", ty("partner", json!({"default": "none"})), "crm"),
+        ("unanswered", ty("partner", json!({"only": harbor})), "crm"),
+        (
+            "unwritable",
+            ty("partner", json!({"writes_only": harbor})),
+            "crm",
+        ),
+        (
+            "unappliable",
+            ty("invoice", json!({"writes_only": one})),
+            "crm",
+        ),
+        ("writer", json!({"default": "write"}), "hr"),
+    ] {
+        let got = l
+            .cat
+            .purge_preflight(&holder(s, id, grant), &source.into(), None)
+            .await;
+        not_granted(&format!("`{source}`'s preflight asked by `{id}`"), got)?;
+    }
+    let blind = holder(s, "blind", ty("partner", json!({"default": "none"})));
     not_found(
         "the preflight of `crm` from `partner` asked by one not shown `partner`",
-        asked(&l, &blind, Some("partner")).await,
+        l.cat
+            .purge_preflight(&blind, &"crm".into(), Some(&"partner".into()))
+            .await,
     )?;
     head_unmoved(store.as_ref(), before, "a principal's preflight").await
 }

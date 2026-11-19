@@ -61,9 +61,14 @@ a principal, and each appends nothing.**
 - A type named that the principal is not shown is refused `not_found`.
   The purge selects as the host's does.
 - Every record the purge would take is judged as the principal's
-  retire of it: the type is shown, its grant's `writes_only` can be
-  applied to the type, the record is one it is answered, it may retire
-  the type, and it may write the record as it stands. A record that
+  retire of it at the authored door, by the same store predicate that
+  door's retire runs: the type is shown and is not a view, its grant's
+  `writes_only` can be applied to the type, it may retire the type, the
+  authored door admits the type's retirement (a type only verbs retire
+  is refused), it is told every setting the retire would name, the
+  record is one it is answered, and it may write the record as it
+  stands. One predicate keeps the report from drifting from the act it
+  describes. A record that
   fails any of these refuses the whole report `not_granted`, naming no
   field and no record. A report that would reveal one record the
   principal may not touch is not given.
