@@ -184,6 +184,18 @@ pub trait Catalog: Send + Sync {
         plan_id: &str,
     ) -> Result<Outcome>;
 
+    /// `accept` of several proposals at once, all or none, in one append:
+    /// each is checked as `accept` checks it, at the head the ones before
+    /// it in the list leave, so a pinned proposal a sibling wrote over is
+    /// refused as moved. Only a proposal of records or of a verb whose
+    /// effect is the store's is taken; another is refused `wrong_door`, a
+    /// decided one or one listed twice `decided`. A refusal is
+    /// [`Error::Accepting`](crate::error::Error::Accepting), naming the
+    /// proposal and its place, and nothing of the list is written. Answers
+    /// each proposal's outcome, in the list's order
+    /// (`docs/decisions/117-several-proposals-are-accepted-as-one.md`).
+    async fn accept_many(&self, who: &Principal, proposals: &[ProposalId]) -> Result<Vec<Outcome>>;
+
     /// Reject a proposal. Nothing is written but the rejection, and the
     /// answer is `Applied` at the rejection's position, with no version.
     async fn reject(

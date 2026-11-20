@@ -17,7 +17,7 @@ interface store {
         compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report, erase-report,
         thin, thin-report, thin-reply, judge, judge-reply, vector-coverage-reply,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
-        proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
+        proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, accept-error, ingest-opts,
         feed-filter, feed-batch, version,
     };
 
@@ -155,6 +155,10 @@ interface store {
         /// Accept a proposed change to the ontology against the plan of
         /// its change made now.
         accept-planned: func(who: principal, proposal: proposal-id, plan-id: string) -> result<outcome, error>;
+        /// Accept several proposals as one, all or none: each checked as
+        /// `accept` checks it, after the ones before it in the list.
+        /// Answers each outcome in the list's order.
+        accept-many: func(who: principal, proposals: list<proposal-id>) -> result<list<outcome>, accept-error>;
         reject: func(who: principal, proposal: proposal-id, reason: string) -> result<outcome, error>;
         proposals: func(who: principal, filter: proposal-filter) -> result<proposals-reply, error>;
         /// Feed the lake the records of one delivery from a source, each

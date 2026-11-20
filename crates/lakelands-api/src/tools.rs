@@ -19,12 +19,15 @@
 //! doors: `pin`, for `as_of` across a turn, and `subscribe` and `unsubscribe`,
 //! for being told of changes. A 20-type lake offers about 80 tools.
 //!
-//! Four doors of [`Catalog`](crate::Catalog) have no tool of their own:
+//! Five doors of [`Catalog`](crate::Catalog) have no tool of their own:
 //! `describe_type` is `describe` with a `type`, `migrate_apply` is
 //! `migrate` with a `report_id`, `ingest` is deliberately not a tool — a
-//! source feeds a lake through a stream, not through a model — and neither
+//! source feeds a lake through a stream, not through a model — neither
 //! is `apply` in `0.1.0`: a bundle is applied by its author's tooling, and
-//! a model declares one declaration at a time.
+//! a model declares one declaration at a time — and neither is
+//! `accept_many`: accepting several proposals as one is a reviewer's act
+//! at the host, served over REST
+//! (`docs/decisions/117-several-proposals-are-accepted-as-one.md`).
 
 use std::collections::BTreeMap;
 
@@ -120,6 +123,10 @@ crate::tagged_enum! {
         Proposals,
         /// `accept`.
         Accept,
+        /// `accept_many`: several proposals accepted as one, all or none.
+        /// Served over REST only, as `declare` is
+        /// (`docs/decisions/117-several-proposals-are-accepted-as-one.md`).
+        AcceptMany,
         /// `reject`.
         Reject,
         /// `declare` of a type.

@@ -93,7 +93,7 @@ fn failure_json(e: &Error, f: &Failure) -> Value {
 /// The status a contract error answers with.
 fn status_of(e: &Error) -> StatusCode {
     match e {
-        Error::Ingested { error, .. } => status_of(error),
+        Error::Ingested { error, .. } | Error::Accepting { error, .. } => status_of(error),
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted
             | Refusal::GrantNeeded { .. }
@@ -626,6 +626,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Args,
             Writes::No,
         ),
+        (["proposals", "accept_many"], Method::POST) => r(
+            Door::AcceptMany,
+            "POST …/proposals/accept_many",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["proposals", id, "accept"], Method::POST) => r(
             Door::Accept,
             "POST …/proposals/<id>/accept",
@@ -965,7 +973,14 @@ async fn door(
             HeaderValue::from_str(&format!("\"{version}\"")).expect("digits are a header value"),
         );
     }
-    Ok(with_position(answer, v["position"].as_u64().map(Position)))
+    // `accept_many` answers a list of outcomes, written at its last one;
+    // an empty list wrote nothing and answers the head, read or refused.
+    let position = match (&r.door, v.as_array().and_then(|all| all.last())) {
+        (Door::AcceptMany, Some(last)) => last["position"].as_u64().map(Position),
+        (Door::AcceptMany, None) => Some(store.head().await.map_err(contract)?),
+        _ => v["position"].as_u64().map(Position),
+    };
+    Ok(with_position(answer, position))
 }
 
 fn fault_answer(f: Fault) -> Stop {

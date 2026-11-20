@@ -94,6 +94,24 @@ fn a_refusal_past_the_bound_carries_quarantine_full_beside_its_own_on_the_wire()
 }
 
 #[test]
+fn a_list_accept_refused_names_its_place_and_proposal_beside_the_refusal() {
+    let e = Error::Accepting {
+        index: 1,
+        proposal: "p-2".into(),
+        error: Box::new(Error::refused(None, crate::Refusal::Decided)),
+    };
+    let wire = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        (wire["error"].as_str(), wire["index"].as_u64()),
+        (Some("refused"), Some(1))
+    );
+    assert_eq!(wire["proposal"], "p-2");
+    let back: Error = serde_json::from_value(wire).unwrap();
+    assert_eq!(back, e);
+    assert!(e.to_string().contains("none was accepted"));
+}
+
+#[test]
 fn a_refusal_told_as_its_kind_alone_names_nothing_and_reads_back() {
     let field: crate::FieldName = "amount".into();
     let e = Error::refused(Some(field), crate::Refusal::WrongDoor);

@@ -1596,3 +1596,39 @@ async fn a_proposed_change_to_records_is_accepted_over_rest_only_against_its_pla
     let record = c.get(&owner, &"invoice".into(), got).await;
     assert_eq!(record.unwrap().data.fields["status"], json!("late"));
 }
+
+/// Proposals accepted together answer at the position of the last
+/// outcome, the head they left; an empty list, written nothing, at the
+/// head (lakelands#1802).
+#[tokio::test]
+async fn proposals_accepted_together_answer_at_the_head_they_left() {
+    let store = rest_lake(Backend::Memory).await;
+    let (addr, task) = serve(store.clone()).await;
+    let post = |key: &'static str, path: &'static str, body: serde_json::Value| async move {
+        let (start, auth) = (
+            format!("POST /lakes/finance/{path}"),
+            format!("authorization: Bearer {key}"),
+        );
+        exchange(addr, &[&start, &auth, &body.to_string()]).await
+    };
+    let mut ids = Vec::new();
+    for k in ["INV-7", "INV-8"] {
+        let write = json!({"write": "upsert", "type": "invoice", "key": k,
+                           "patch": {"status": "open"}});
+        let (status, _, body) =
+            post("k-clerk", "proposals", json!({"write": write, "why": k})).await;
+        assert!(status.starts_with('2'), "{status} {body}");
+        let filed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        ids.push(filed["proposal"].clone());
+    }
+    let mut pinned_at = Vec::new();
+    for list in [json!(ids), json!([])] {
+        let body = json!({ "proposals": list });
+        let (status, pinned, body) = post("k-owner", "proposals/accept_many", body).await;
+        assert!(status.starts_with('2'), "{status} {body}");
+        let head = store.head().await.unwrap();
+        pinned_at.push(pinned.contains(&format!("lakelands-position: {}", head.0)));
+    }
+    task.abort();
+    assert_eq!(pinned_at, [true, true]);
+}

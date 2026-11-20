@@ -1806,6 +1806,16 @@ interface types {
         error: error,
     }
 
+    /// What an `accept-many` answers when it fails (lakelands#1802): the
+    /// error, and, for a proposal of the list that was refused, its place
+    /// in the list (from 0) and its id. Nothing of the list was accepted.
+    /// A refusal of the call itself, before any proposal, names none.
+    record accept-error {
+        index: option<u64>,
+        proposal: option<proposal-id>,
+        error: error,
+    }
+
     // ------------------------------------------------------------------
     // The facade and the feed
     // ------------------------------------------------------------------

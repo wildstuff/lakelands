@@ -108,6 +108,7 @@ impl Catalog for DownCatalog {
     refuse!(search<'life1>(who: &'life1 Principal, search: Search) -> Reply<Hits>);
     refuse!(propose<'life1>(who: &'life1 Principal, write: ProposedWrite, why: String) -> Outcome);
     refuse!(accept<'life1, 'life2>(who: &'life1 Principal, proposal: &'life2 ProposalId) -> Outcome);
+    refuse!(accept_many<'life1, 'life2>(who: &'life1 Principal, proposals: &'life2 [ProposalId]) -> Vec<Outcome>);
     refuse!(reject<'life1, 'life2>(
         who: &'life1 Principal, proposal: &'life2 ProposalId, reason: String
     ) -> Outcome);

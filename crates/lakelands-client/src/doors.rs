@@ -410,6 +410,12 @@ impl Catalog for RemoteCatalog {
         self.go(who, Call::new(Method::POST, path)).await
     }
 
+    async fn accept_many(&self, who: &Principal, proposals: &[ProposalId]) -> Result<Vec<Outcome>> {
+        let call = Call::new(Method::POST, "proposals/accept_many".into());
+        self.go(who, call.json(&json!({ "proposals": proposals })))
+            .await
+    }
+
     async fn accept_planned(
         &self,
         who: &Principal,

@@ -734,6 +734,14 @@ pub(crate) async fn run(
             f.at.clock = clock;
             to_json(&c.proposals(who, f).await?)
         }
+        Door::AcceptMany => {
+            #[derive(Deserialize)]
+            struct M {
+                proposals: Vec<ProposalId>,
+            }
+            let m: M = args(label, &a)?;
+            to_json(&c.accept_many(who, &m.proposals).await?)
+        }
         Door::Accept | Door::Reject => {
             #[derive(Deserialize)]
             struct D {
