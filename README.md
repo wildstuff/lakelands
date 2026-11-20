@@ -163,33 +163,24 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.24.0`.** Lakelands `0.24.0` is the `lakelands` CLI, its
+> **Status: `0.25.0`.** Lakelands `0.25.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (1148 checks through the doors and 108 through the
-> engine seam), with 113 decision records and the event log at format
+> conformance suite (1152 checks through the doors and 108 through the
+> engine seam), with 115 decision records and the event log at format
 > version 24, installable from the release. Its budgets: see
 > `docs/budgets.md` for the ceilings and the ratchet bases.
-> Beside what `0.23.0` held (the numbers are issues), a host erases a
-> record's values, one field's or a quarantined row's, and may have a
-> quarantine's close erase what it closes (`erase_on_close`,
-> lakelands#1736); a judge answers what the rules say of records before
-> anything is written (lakelands#1670); a field may belong to a state
-> move, which only a verb moves (lakelands#1630); a restore stops at a
-> position (`restore --through`, lakelands#1515); a value of the wrong
-> kind is answered with the shape its field takes, on every kind
-> (lakelands#1644); `extract` takes the text a pattern matches
-> (lakelands#1696); and a struct is read from an object at every door,
-> where its positional (array) form is refused (lakelands#725), a change
-> a host makes. A read of a window glances at the rows outside it
-> (lakelands#1780), and the deprecated `ProjectionStore::compact` is gone
-> (lakelands#1752).
-> **0.24.0 begins a new log format.** It reads and writes format 24 and
-> nothing else: a lake of format 23 or any other is refused, nothing is
-> translated, and a host ingests its data again into a new lake
-> (record 115). The lake 0.24.0 made through its doors is kept, never
-> edited, under `docs/log-format/lakes/24/`, and every later release
-> reads it; the lake 0.23.0 made is kept as its bytes and refused.
+> Beside what `0.24.0` held (the numbers are issues), every reader of a
+> quarantined row is told the cause code of the host's refusal
+> (lakelands#1808); a principal asks a type's vector coverage and a
+> purge's report, and is answered only what it may see (lakelands#1810,
+> an API change a host makes); and a reviewer accepts several proposals
+> in one commit, all or none, at `Catalog::accept_many` and
+> `POST …/proposals/accept_many` (lakelands#1812, an API and WIT change
+> a host makes).
+> The log format stays 24: a lake of `0.24.0` is read as it was, and
+> nothing is ingested again. The lake `0.24.0` made through its doors
+> stays kept, never edited, under `docs/log-format/lakes/24/`.
 
 ## Try it
 
@@ -313,8 +304,10 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones. `0.24.0` built what the status block above lists. `0.23.0`
-built series in a lake: a window's read, a view grouped by a bucket of
+milestones. `0.25.0` built what the status block above lists. `0.24.0`
+built log format 24, the erasure of a record's values, a judge, a field
+that belongs to a state move, a restore that stops at a position and a
+struct read from an object. `0.23.0` built series in a lake: a window's read, a view grouped by a bucket of
 time, a guard reading the value in force from a record, thinning past a
 horizon, builds in parts beside the writer, and log format 23. `0.22.0`
 built reading judged apart from writing, a grant over a set of values, a

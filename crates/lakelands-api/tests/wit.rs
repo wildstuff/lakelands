@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.24.0`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.25.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
