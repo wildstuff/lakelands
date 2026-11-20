@@ -427,6 +427,49 @@ pub(crate) fn untold_setting(sees: &Sight<'_>, decl: &TypeDecl, key: &RecordKey)
     granted(decl.name.as_str() != SETTING_TYPE || sees.setting_told(key.as_str()))
 }
 
+/// Whether the principal of `sees` may retire a record of `decl` through
+/// `door`, judged before a record is read: no view, its `writes_only`
+/// applies, every field is its to write, and the door retires the type,
+/// else it is named the verbs that do which it is shown, or `wrong_door`
+/// (lakelands#1148).
+pub(crate) fn retires(sees: &Sight<'_>, door: Door, o: &Ontology, decl: &TypeDecl) -> Result<()> {
+    not_a_view(decl)?;
+    // Pinned at the retire door by a_holder_of_writes_only_writes_its_records_alone;
+    // the purge preflight answers this case not granted by construction
+    // (`Sight::writes` answers `Admit::Nothing`), so it cannot pin it.
+    sees.check_writes_only(decl)?;
+    granted(sees.may_retire(decl))?;
+    if door.admits_retirement(decl.retired_by) {
+        return Ok(());
+    }
+    let verbs: Vec<VerbName> = (o.verbs.values().map(|e| &e.decl))
+        .filter(|v| v.on == decl.name && matches!(v.effect, VerbEffect::Retire))
+        .filter(|v| sees.verb_shown(v))
+        .map(|v| v.name.clone())
+        .collect();
+    match verbs.is_empty() {
+        true => Err(Error::refused(None, Refusal::WrongDoor)),
+        false => Err(Error::refused(None, Refusal::VerbsOnly { verbs })),
+    }
+}
+
+/// The one judgment of a retire of `decl` at `key` by the principal of
+/// `sees` through `door`, a record door's and a purge's report's alike:
+/// [`retires`], a setting it is told, the live record `reach` finds it,
+/// and that record its to write as it stands (006), which is answered.
+pub(crate) fn judge_retire(
+    (sees, door, o): (&Sight<'_>, Door, &Ontology),
+    decl: &TypeDecl,
+    key: &RecordKey,
+    reach: impl FnOnce() -> Result<StoredRecord>,
+) -> Result<StoredRecord> {
+    retires(sees, door, o, decl)?;
+    untold_setting(sees, decl, key)?;
+    let before = reach()?;
+    granted(sees.writes_record(decl, Some(&before.fields), None))?;
+    Ok(before)
+}
+
 /// Refuse as not granted unless `ok`.
 pub(crate) fn granted(ok: bool) -> Result<()> {
     if ok {

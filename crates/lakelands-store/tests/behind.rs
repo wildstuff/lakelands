@@ -31,7 +31,7 @@ use lakelands_core::conformance::fixture::{
 };
 use lakelands_engine_mem::MemoryOpener;
 use lakelands_store::log::Draft;
-use probed::{Probe, ProbedOpener};
+use probed::{Probe, ProbedOpener, until};
 use serde_json::{Value, json};
 
 /// A backing, an embedding backend and an executor that count what they
@@ -128,19 +128,6 @@ impl VerbExecutor for Counting {
     async fn execute(&self, _: &VerbInvocation) -> lakelands_api::Result<Value> {
         Ok(json!({"ran": self.hand().await}))
     }
-}
-
-/// Wait until `done`, for a row that needs another task to have got
-/// somewhere.
-async fn until(done: impl Fn() -> bool) {
-    for _ in 0..5_000 {
-        if done() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        tokio::task::yield_now().await;
-    }
-    panic!("waited five seconds");
 }
 
 /// A new lake on the probed memory engine, with the engine's own opener

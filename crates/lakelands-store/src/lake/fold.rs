@@ -758,12 +758,7 @@ impl Lake {
                 list.insert(source.clone(), state.to_owned());
                 let (seam, at) = (crate::sealing::FORGOTTEN, crate::sealing::forgotten_at());
                 let list = serde_json::to_value(&list).expect("a list serialises");
-                projection.put_output(seam, &at, &list, e.position)?;
-                staged
-                    .outputs
-                    .entry((seam.to_owned(), at))
-                    .or_default()
-                    .push((e.position, list));
+                put_list(projection, staged, (seam, at), list, e.position)?;
             }
             // The act is owed until a rebuild that knew it before it began
             // has folded the log, and the reclaim ran (065).
@@ -808,12 +803,7 @@ impl Lake {
                 list.insert(e.position, state.to_owned());
                 let (seam, at) = (crate::remove::REMOVED, crate::remove::removed_at());
                 let list = crate::remove::list_value(&list);
-                projection.put_output(seam, &at, &list, e.position)?;
-                staged
-                    .outputs
-                    .entry((seam.to_owned(), at))
-                    .or_default()
-                    .push((e.position, list));
+                put_list(projection, staged, (seam, at), list, e.position)?;
             }
             // A purge is one act in parts (099): this event begins it and
             // its `act_whole` ends it. Until then the list says the act is
@@ -828,12 +818,7 @@ impl Lake {
                 list.insert(e.position, act);
                 let (seam, at) = (crate::purge::PURGED, crate::purge::purged_at());
                 let list = crate::purge::purged_value(&list);
-                projection.put_output(seam, &at, &list, e.position)?;
-                staged
-                    .outputs
-                    .entry((seam.to_owned(), at))
-                    .or_default()
-                    .push((e.position, list));
+                put_list(projection, staged, (seam, at), list, e.position)?;
             }
             // The act is whole: a purge's entry says so, and what the
             // writer's open finds not whole it leaves alone.
@@ -846,12 +831,7 @@ impl Lake {
                     entry.whole = true;
                     let (seam, at) = (crate::purge::PURGED, crate::purge::purged_at());
                     let list = crate::purge::purged_value(&list);
-                    projection.put_output(seam, &at, &list, e.position)?;
-                    staged
-                        .outputs
-                        .entry((seam.to_owned(), at))
-                        .or_default()
-                        .push((e.position, list));
+                    put_list(projection, staged, (seam, at), list, e.position)?;
                 }
             }
             EventBody::Declared {
@@ -1792,6 +1772,21 @@ pub(crate) struct Recomputed {
     pub(super) plans: record::Plans,
     /// The lake's keys, for a call that reads a source's erasable values.
     pub(super) keys: Option<Arc<crate::sealing::Keys>>,
+}
+
+/// Put `list` at the output `(seam, at)` as of `p`, as the transaction's
+/// later steps read it.
+fn put_list(
+    projection: &dyn lakelands_api::engine::ProjectionStore,
+    staged: &mut Staged,
+    (seam, at): (&str, Digest),
+    list: serde_json::Value,
+    p: Position,
+) -> Result<()> {
+    projection.put_output(seam, &at, &list, p)?;
+    let lists = staged.outputs.entry((seam.to_owned(), at));
+    lists.or_default().push((p, list));
+    Ok(())
 }
 
 /// The types whose records `declaration`, over `o`, computes again: whose

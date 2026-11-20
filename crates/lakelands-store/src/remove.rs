@@ -824,7 +824,8 @@ fn report_of(
             }
         }
     }
-    let references = crate::purge::report(view, ontology, (&g.source, None), &retire, Vec::new())?;
+    let references =
+        crate::purge::report(view, ontology, (&g.source, None, None), &retire, Vec::new())?;
     let log_events = head.map_or(0, |p| p.0);
     Ok(RemoveReport {
         source: g.source.clone(),
@@ -1874,19 +1875,9 @@ impl Remove {
         drafts: Vec<Draft>,
     ) -> Result<(Vec<Draft>, bool)> {
         let act = self.act.expect("a part follows the act's beginning");
-        crate::parts::part(
-            lake,
-            (w, view),
-            now,
-            room,
-            drafts,
-            crate::parts::Part {
-                closes: &mut self.closes,
-                taken: &mut self.retire,
-                kind: lakelands_api::event::ChangeKind::Retired,
-                act,
-            },
-        )
+        let held = (&mut self.closes, &mut self.retire);
+        let kind = (lakelands_api::event::ChangeKind::Retired, act);
+        crate::parts::part(lake, (w, view), now, room, drafts, held, kind)
     }
 }
 

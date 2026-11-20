@@ -12,6 +12,8 @@
 //! The engine here is the memory engine behind a wrapper whose projection
 //! refuses to store records while it is armed.
 
+mod probed;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -26,10 +28,11 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::{Declaration, Outcome, Proposal};
 use lakelands_api::{
-    Catalog, Error, Find, Get, Grants, LakeId, LakeStore, Location, Position, Principal,
-    PrincipalKind, ReadAt, RecordKey, Refusal, Result, TypeName, WriteContext,
+    Catalog, Error, Find, Get, LakeId, LakeStore, Location, Position, Principal, ReadAt, RecordKey,
+    Refusal, Result, TypeName, WriteContext,
 };
 use lakelands_engine_mem::MemoryOpener;
+use probed::{owner, until};
 use serde_json::json;
 
 /// Always fail, while armed with this many.
@@ -299,15 +302,6 @@ impl EngineOpener for FailingOpener {
             dropped: self.dropped.clone(),
             compact: self.compact.clone(),
         }))
-    }
-}
-
-fn owner(lake: &str) -> Principal {
-    Principal {
-        kind: PrincipalKind::Human,
-        id: "owner".into(),
-        lake: lake.into(),
-        grants: Grants::owner(),
     }
 }
 
@@ -862,17 +856,4 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
         before + 1,
         "the next open owes nothing"
     );
-}
-
-/// Wait until `done`, for a row that needs the road beside the writer to
-/// have got somewhere.
-async fn until(done: impl Fn() -> bool) {
-    for _ in 0..5_000 {
-        if done() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        tokio::task::yield_now().await;
-    }
-    panic!("waited five seconds");
 }

@@ -18,7 +18,8 @@ fn doc(first: &str, kind: &str) -> TypeDecl {
     )
 }
 
-fn record(ty: &str, key: &str, fields: serde_json::Value, at: u64) -> StoredRecord {
+/// A record of `ty` at `key` at `at`, with `fields`.
+pub(super) fn record(ty: &str, key: &str, fields: serde_json::Value, at: u64) -> StoredRecord {
     let fields = serde_json::from_value(fields).unwrap();
     StoredRecord {
         fields,

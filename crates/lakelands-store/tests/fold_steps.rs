@@ -27,12 +27,12 @@ use lakelands_api::seam::Seams;
 use lakelands_api::write::{Declaration, Migration, Rekey};
 use lakelands_api::{FieldName, Location, Position, Result, Version};
 use lakelands_core::conformance::fixture::{
-    computed_by, field, object_set_on, patch, reference, type_decl,
+    computed_by, field, object_set_on, reference, type_decl,
 };
 use lakelands_engine_mem::MemoryOpener;
 use lakelands_store::lake::Lake;
 use lakelands_store::log::Draft;
-use probed::calls;
+use probed::{calls, wrote};
 use serde_json::{Value, json};
 
 /// A lake on the memory engine, written by hand-built events.
@@ -90,16 +90,6 @@ fn declared(decl: TypeDecl) -> EventBody {
         declaration: Declaration::Type(decl),
         version: 1,
         with_the_set: false,
-    }
-}
-
-fn wrote(ty: &str, key: &str, version: u64, fields: Value) -> EventBody {
-    EventBody::RecordUpserted {
-        ty: ty.into(),
-        key: key.into(),
-        version: Version(version),
-        patch: patch(fields),
-        made: false,
     }
 }
 

@@ -13,7 +13,8 @@ use lakelands_api::error::Beyond;
 use lakelands_api::ontology::AtIngest;
 use lakelands_api::write::Outcome;
 
-use crate::conformance::fixture::{Answer, ingest, reviewer, source_record};
+use super::guard_in_force::broke as broken;
+use crate::conformance::fixture::{ingest, reviewer, source_record};
 use crate::conformance::prelude::*;
 
 check!(
@@ -95,17 +96,6 @@ async fn try_declare(l: &Lake, json: Value) -> Result<lakelands_api::Result<Outc
     match &a {
         Err(e) if reason(&a).is_none() => Err(Failure::new(format!("declaring failed: {e}"))),
         _ => Ok(a),
-    }
-}
-
-/// The constraint a refusal says is broken, if it says one is.
-fn broken(a: &impl Answer) -> Option<String> {
-    let Some(Refusal::Constraint(said)) = reason(a) else {
-        return None;
-    };
-    match &said.case {
-        Case::ConstraintBroken { constraint, .. } => Some(constraint.to_string()),
-        _ => None,
     }
 }
 

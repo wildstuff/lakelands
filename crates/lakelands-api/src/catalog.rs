@@ -411,6 +411,37 @@ pub trait Catalog: Send + Sync {
         let op = "judge".to_owned();
         Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
     }
+
+    /// [`LakeStore::vector_coverage`] as `who` is answered it: the embedding
+    /// fields of `ty` it reads, over the records it is answered
+    /// (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
+    /// It is no tool. A handle that does not count, this default, answers
+    /// it unbound.
+    async fn vector_coverage(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+    ) -> Result<Reply<Vec<crate::read::VectorCoverage>>> {
+        let _ = (who, ty);
+        let op = "vector_coverage".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
+
+    /// [`LakeStore::purge_preflight`] asked by `who` through this door's
+    /// context, as a write is judged: answered where `who` may retire every
+    /// record the purge would take, naming only what it is shown, and
+    /// refused `not_granted` otherwise (116). It is no tool. A handle that
+    /// does not purge, this default, answers it unbound.
+    async fn purge_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<crate::write::PurgeReport> {
+        let _ = (who, source, ty);
+        let op = "purge_preflight".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
 }
 
 /// `ingest` for records already in hand: the records as the source
@@ -540,8 +571,9 @@ pub trait LakeStore: Send + Sync {
 
     /// For each of a type's embedding fields, at the head: how many live
     /// records hold a vector, and how many hold none although they have
-    /// text to embed. The host's, with no door; counting what is due walks
-    /// the type's records without a vector, a page at a time.
+    /// text to embed. The host's; a principal asks [`Catalog::vector_coverage`].
+    /// Counting what is due walks the type's records without a vector, a
+    /// page at a time.
     async fn vector_coverage(&self, ty: &TypeName) -> Result<Vec<crate::read::VectorCoverage>>;
 
     /// Delete the projection and rebuild it from the log. Answers the
@@ -613,7 +645,7 @@ pub trait LakeStore: Send + Sync {
 
     /// What [`Self::purge_source`] would do, appending nothing: the same
     /// report, refused as the purge would be, under an id the purge may
-    /// repeat.
+    /// repeat. The host's; a principal asks [`Catalog::purge_preflight`].
     async fn purge_preflight(
         &self,
         source: &SourceId,

@@ -120,6 +120,14 @@ impl Scoped {
         self.engine.projection()
     }
 
+    /// `put` on the engine's projection, kept from it under a scope.
+    fn unscoped(&self, put: impl FnOnce(&dyn ProjectionStore) -> Result<()>) -> Result<()> {
+        match self.scoped() {
+            true => Ok(()),
+            false => put(self.inner()),
+        }
+    }
+
     /// Fold the next event as of `at`, the position before it.
     pub(crate) fn reads_at(&self, at: Position) {
         if let Some(s) = self.scope() {
@@ -185,10 +193,7 @@ impl ProjectionStore for Scoped {
         schema_hash: Option<&str>,
         at: Position,
     ) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => (self.inner()).put_declaration(declaration, version, schema_hash, at),
-        }
+        self.unscoped(|p| p.put_declaration(declaration, version, schema_hash, at))
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
@@ -206,24 +211,15 @@ impl ProjectionStore for Scoped {
     }
 
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().end_head_only(name, at),
-        }
+        self.unscoped(|p| p.end_head_only(name, at))
     }
 
     fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().put_order(name, key, entry),
-        }
+        self.unscoped(|p| p.put_order(name, key, entry))
     }
 
     fn end_order(&self, name: &TypeName) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().end_order(name),
-        }
+        self.unscoped(|p| p.end_order(name))
     }
 
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
@@ -247,17 +243,11 @@ impl ProjectionStore for Scoped {
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().put_proposal(proposal, at),
-        }
+        self.unscoped(|p| p.put_proposal(proposal, at))
     }
 
     fn put_quarantined(&self, row: &Quarantined, at: Position) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().put_quarantined(row, at),
-        }
+        self.unscoped(|p| p.put_quarantined(row, at))
     }
 
     fn put_membership(
@@ -268,10 +258,7 @@ impl ProjectionStore for Scoped {
         member: bool,
         at: Position,
     ) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().put_membership(set, ty, key, member, at),
-        }
+        self.unscoped(|p| p.put_membership(set, ty, key, member, at))
     }
 
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
@@ -282,10 +269,7 @@ impl ProjectionStore for Scoped {
     }
 
     fn mark_applied(&self, applied: &Applied) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().mark_applied(applied),
-        }
+        self.unscoped(|p| p.mark_applied(applied))
     }
 
     fn clear(&self) -> Result<()> {
@@ -301,10 +285,7 @@ impl ProjectionStore for Scoped {
     }
 
     fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().put_thinned_act(act, at),
-        }
+        self.unscoped(|p| p.put_thinned_act(act, at))
     }
 
     fn put_thinned(
@@ -314,10 +295,7 @@ impl ProjectionStore for Scoped {
         before: lakelands_api::time::Timestamp,
         at: Position,
     ) -> Result<()> {
-        match self.scoped() {
-            true => Ok(()),
-            false => self.inner().put_thinned(ty, key, before, at),
-        }
+        self.unscoped(|p| p.put_thinned(ty, key, before, at))
     }
 }
 
@@ -726,6 +704,17 @@ fn wide_filter() -> FeedFilter {
     }
 }
 
+/// The events of the records in `page`.
+fn filter_of(page: &[(TypeName, RecordKey)]) -> FeedFilter {
+    let types = BTreeSet::from_iter(page.iter().map(|(ty, _)| ty.clone()));
+    let keys = BTreeSet::from_iter(page.iter().map(|(_, key)| key.clone()));
+    FeedFilter {
+        types: types.into_iter().collect(),
+        keys: keys.into_iter().collect(),
+        ..FeedFilter::default()
+    }
+}
+
 /// The settings the lake holds.
 fn settings_filter() -> FeedFilter {
     FeedFilter {
@@ -900,21 +889,7 @@ pub(crate) fn plan(
     plan.recorded = recorded;
     plan.outputs_read = fills || sealed;
     for page in Vec::from_iter(keys).chunks(PAGE) {
-        let filter = FeedFilter {
-            types: page
-                .iter()
-                .map(|(ty, _)| ty.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-            keys: page
-                .iter()
-                .map(|(_, key)| key.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-            ..FeedFilter::default()
-        };
+        let filter = filter_of(page);
         let Some(at) = positions(view, &filter, head)? else {
             plan.why
                 .push("the feed index does not decide the records' events".to_owned());
@@ -1011,21 +986,7 @@ impl Plan {
             .collect();
         let head = view.position().unwrap_or(Position::GENESIS);
         for page in added.chunks(PAGE) {
-            let filter = FeedFilter {
-                types: page
-                    .iter()
-                    .map(|(ty, _)| ty.clone())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect(),
-                keys: page
-                    .iter()
-                    .map(|(_, key)| key.clone())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect(),
-                ..FeedFilter::default()
-            };
+            let filter = filter_of(page);
             let Some(at) = positions(view, &filter, head)? else {
                 self.why
                     .push("the feed index does not decide the records' events".to_owned());

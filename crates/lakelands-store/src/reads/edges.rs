@@ -204,23 +204,30 @@ pub(crate) fn answered_of(
     for page in keys.chunks(COUNT_PAGE) {
         let keys: Vec<RecordKey> = page.iter().map(|k| (*k).clone()).collect();
         let rows = view.get_many(ty, &keys)?;
-        let ends = match rows.is_empty() {
-            true => Vec::new(),
-            false => {
-                let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
-                sees.ends(decl, &fields, &mut |end, keys| view.get_many(end, keys))?
-            }
-        };
-        let held = rows
-            .iter()
-            .zip(ends)
-            .filter(|(r, ends)| !(*ends && sees.answers(ty, r) && sees.told(r).is_some()));
-        found += page.len() - held.count();
+        let rows: Vec<&StoredRecord> = rows.iter().collect();
+        let held = answered_rows(view, sees, decl, &rows)?;
+        found += page.len() - held.iter().filter(|a| !**a).count();
         if found >= need {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Of each of `rows`, records of `decl` read in `view`, whether the
+/// principal of `sees` is answered it, as [`answered`] judges a key.
+pub(crate) fn answered_rows(
+    view: &dyn ProjectionView,
+    sees: &Sight,
+    decl: &TypeDecl,
+    rows: &[&StoredRecord],
+) -> Result<Vec<bool>> {
+    let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
+    let ends = sees.ends(decl, &fields, &mut |end, keys| view.get_many(end, keys))?;
+    let answered = |(r, ends): (&&StoredRecord, bool)| {
+        ends && sees.answers(&decl.name, r) && sees.told(r).is_some()
+    };
+    Ok(rows.iter().zip(ends).map(answered).collect())
 }
 
 /// The walks' view of the lake for one principal: a record is visible when

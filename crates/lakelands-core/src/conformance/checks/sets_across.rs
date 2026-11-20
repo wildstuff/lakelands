@@ -91,7 +91,7 @@ async fn fired(s: &dyn LakeStore, at: Position) -> Result<Vec<(String, String)>,
 }
 
 /// `(set, key, joined)` rows, sorted.
-fn rows(r: &[(&str, &str, bool)]) -> Vec<(String, String, bool)> {
+pub(super) fn rows(r: &[(&str, &str, bool)]) -> Vec<(String, String, bool)> {
     let mut r: Vec<_> = (r.iter())
         .map(|(s, k, j)| ((*s).to_owned(), (*k).to_owned(), *j))
         .collect();
@@ -100,7 +100,7 @@ fn rows(r: &[(&str, &str, bool)]) -> Vec<(String, String, bool)> {
 }
 
 /// The next position.
-async fn next(s: &dyn LakeStore) -> Result<Position, Failure> {
+pub(super) async fn next(s: &dyn LakeStore) -> Result<Position, Failure> {
     Ok(s.head().await.must("the head")?.next())
 }
 

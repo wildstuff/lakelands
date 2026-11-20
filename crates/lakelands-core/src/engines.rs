@@ -762,6 +762,27 @@ pub fn series_pairs(decl: &TypeDecl, setting: Option<&Value>) -> Vec<SeriesPair>
     out
 }
 
+/// Mark the pairs `named` asks for as building in `state`, and leave
+/// those it no longer names out; a pair still named and already kept
+/// stays kept, and a pair newly marked starts a build. Answers the fields
+/// of the pairs left out, whose rows go in the writer's turn, as a `Drop`
+/// does, so none is left without a pair.
+pub fn mark_pairs(state: &mut SeriesState, named: Vec<SeriesPair>) -> Vec<FieldName> {
+    let pairs = state.kept.iter().chain(state.building.iter());
+    let gone = (series_fields(state).into_iter().zip(pairs))
+        .filter(|(_, p)| !named.contains(p))
+        .map(|(f, _)| f)
+        .collect();
+    state.kept.retain(|p| named.contains(p));
+    state.building.retain(|p| named.contains(p));
+    let fresh: Vec<_> = (named.into_iter())
+        .filter(|p| !state.kept.contains(p) && !state.building.contains(p))
+        .collect();
+    state.started += u64::from(!fresh.is_empty());
+    state.building.extend(fresh);
+    gone
+}
+
 /// The derived field names a type's series pairs keep their rows under,
 /// those being built too: `<order>\u{1F}<series>`.
 pub fn series_fields(state: &SeriesState) -> Vec<FieldName> {

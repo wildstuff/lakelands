@@ -57,11 +57,12 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{PurgeMoved, PurgeReference, PurgeReport, RecordRef, TypeRetired};
 use lakelands_api::{
-    Error, FieldMeta, FieldName, Position, RecordKey, RelationName, Result, SourceId, Timestamp,
-    TypeName, WriteContext,
+    Error, FieldMeta, FieldName, Position, Principal, RecordKey, RelationName, Result, SourceId,
+    Timestamp, TypeName, WriteContext,
 };
 
 use lakelands_core::links;
+use lakelands_core::sight::{Door, Sight};
 
 use crate::exec::Turn;
 use crate::lake::{Lake, PAGE, Staged, Writer, every, owing_now};
@@ -515,11 +516,12 @@ fn window_of(id: &str) -> Result<Window> {
 /// The report of a purge that takes `purged`: what it retires per type,
 /// and per relation the live records it does not take that refer into it,
 /// by a `via` field or as a link record with an end inside. Each type
-/// that can refer is read once, a page at a time.
+/// that can refer is read once, a page at a time. Asked by a principal,
+/// it names only what that principal is shown and answered (116).
 pub(crate) fn report<'a>(
     view: &dyn ProjectionView,
     ontology: &'a Ontology,
-    (source, ty): (&SourceId, Option<&TypeName>),
+    (source, ty, sees): (&SourceId, Option<&TypeName>, Option<&Sight>),
     purged: &[StoredRecord],
     unsearched: Vec<TypeName>,
 ) -> Result<PurgeReport> {
@@ -594,11 +596,13 @@ pub(crate) fn report<'a>(
                 names(name.clone(), r.name.clone(), vec![(via, &r.target)]);
             }
         }
-        if found.is_empty() {
+        if found.is_empty() || sees.is_some_and(|s| s.ty(name).is_err()) {
             continue;
         }
         writes::live(view, name, |r| {
-            if taken.contains(&(name, &r.key)) {
+            let hid =
+                |s: &Sight| Ok::<_, Error>(!crate::reads::answered_rows(view, s, decl, &[r])?[0]);
+            if taken.contains(&(name, &r.key)) || sees.map(hid).transpose()? == Some(true) {
                 return Ok(());
             }
             for (at, fields) in &mut found {
@@ -617,7 +621,23 @@ pub(crate) fn report<'a>(
         references.extend(found.into_iter().map(|f| f.0).filter(|f| f.records > 0));
     }
     references.sort_by(|a, b| (&a.ty, &a.relation).cmp(&(&b.ty, &b.relation)));
-    let (_, quarantined) = closes(view, source, ty)?;
+    let (_, mut quarantined) = closes(view, source, ty)?;
+    let mut moved: Vec<PurgeMoved> = taken_moved.into_values().collect();
+    let (mut unsearched, mut references) = (unsearched, references);
+    if let Some(s) = sees {
+        let shown = |s: &Sight, f: &PurgeReference| {
+            let d = s.ty(&f.ty).ok();
+            d.is_some_and(|d| {
+                d.relations
+                    .iter()
+                    .any(|r| r.name == f.relation && s.relation(d, r))
+            })
+        };
+        references.retain(|f| shown(s, f));
+        moved.retain(|m| s.reads(&m.ty, &m.field));
+        unsearched.retain(|t| s.ty(t).is_ok());
+        quarantined.retain(|q| s.ty(&q.ty).is_ok());
+    }
     Ok(PurgeReport {
         source: source.clone(),
         ty: ty.cloned(),
@@ -626,7 +646,7 @@ pub(crate) fn report<'a>(
         unsearched,
         position: view.position().unwrap_or(Position::GENESIS),
         references,
-        moved: taken_moved.into_values().collect(),
+        moved,
         report_id: String::new(),
         set_off: 0,
         max_set_changes: 0,
@@ -653,16 +673,38 @@ fn closes(
 /// purge may repeat, with what its retirements would set off across an
 /// edge, past the ceiling too, so a host learns before the act that it
 /// must narrow a set or open the lake with a higher `max_set_changes`.
-pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
+/// Asked by `who`, it is refused where `who` may not retire a record the
+/// purge takes, as its retire would be, and names only what `who` is
+/// shown (116).
+pub fn preflight(
+    lake: &Lake,
+    source: &SourceId,
+    ty: Option<&TypeName>,
+    who: Option<&Principal>,
+) -> Result<PurgeReport> {
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
+    let sees = who.map(|p| Sight::held(p, &w.ontology));
+    if let (Some(s), Some(t)) = (&sees, ty) {
+        s.ty(t)?;
+    }
     let window = Window::Whole;
     let out = settled(lake, view.as_ref(), &w.ontology, (source, ty), &window)?;
+    for (s, r) in sees
+        .iter()
+        .flat_map(|s| out.taken.iter().map(move |r| (s, r)))
+    {
+        let decl = s.ty(&r.ty).map_err(|_| Error::not_granted())?;
+        let held = crate::reads::answered_rows(view.as_ref(), s, decl, &[r])?[0];
+        let reach = || held.then(|| r.clone()).ok_or_else(Error::not_granted);
+        let at = (s, Door::Authored, &w.ontology);
+        writes::judge_retire(at, decl, &r.key, reach).map_err(|_| Error::not_granted())?;
+    }
     judged(&out, (source, ty), &window)?;
     let mut report = report(
         view.as_ref(),
         &w.ontology,
-        (source, ty),
+        (source, ty, sees.as_ref()),
         &out.taken,
         out.unsearched,
     )?;
@@ -865,7 +907,7 @@ impl Purge {
         let mut report = report(
             view,
             &ontology,
-            (&self.source, self.ty.as_ref()),
+            (&self.source, self.ty.as_ref(), None),
             &out.taken,
             out.unsearched.clone(),
         )?;
@@ -994,19 +1036,9 @@ impl Purge {
         room: usize,
     ) -> Result<(Vec<Draft>, bool)> {
         let act = self.act.expect("a part follows the act's beginning");
-        crate::parts::part(
-            lake,
-            (w, view),
-            now,
-            room,
-            Vec::new(),
-            crate::parts::Part {
-                closes: &mut self.closes,
-                taken: &mut self.taken,
-                kind: ChangeKind::Purged,
-                act,
-            },
-        )
+        let held = (&mut self.closes, &mut self.taken);
+        let kind = (ChangeKind::Purged, act);
+        crate::parts::part(lake, (w, view), now, room, Vec::new(), held, kind)
     }
 
     /// One turn beside the writer, as [`Job::turn`] describes: the act's

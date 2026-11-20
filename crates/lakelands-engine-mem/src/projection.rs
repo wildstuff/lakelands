@@ -681,37 +681,11 @@ impl Projection {
     fn mark_series(&mut self, ty: &TypeName) {
         let named = self.series_pairs(ty);
         let mut state = self.series_state(ty);
-        // A pair the setting no longer names is taken back: its rows go in
-        // the writer's turn, as a `Drop` does, so none is left without a
-        // pair.
-        let gone: Vec<_> = state
-            .kept
-            .iter()
-            .chain(state.building.iter())
-            .filter(|p| !named.contains(p))
-            .cloned()
-            .collect();
-        for pair in &gone {
-            let field = FieldName::from(lakelands_api::seam::series_field(
-                pair.order.as_str(),
-                pair.series.as_str(),
-            ));
+        for field in engines::mark_pairs(&mut state, named) {
             let mut after = None;
             while let Some(last) = self.clear_series_rows(ty, &field, after.as_ref(), 4096) {
                 after = Some(last);
             }
-        }
-        state.kept.retain(|p| named.contains(p));
-        state.building.retain(|p| named.contains(p));
-        let mut started = false;
-        for pair in named {
-            if !state.kept.contains(&pair) && !state.building.contains(&pair) {
-                state.building.push(pair);
-                started = true;
-            }
-        }
-        if started {
-            state.started += 1;
         }
         self.set_series(ty, &state);
     }

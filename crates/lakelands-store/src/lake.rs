@@ -667,26 +667,11 @@ impl Lake {
         let shape = self.shape(view)?;
         let tip = view.position().map(|p| (p, Digest::zero()));
         Ok(Writer {
-            lease: None,
             tip,
-            staged: None,
-            closing: BTreeSet::new(),
             last_known_at: wall_clock(),
             ontology: shape.ontology.clone(),
             settings: shape.settings.clone(),
-            owed: Vec::new(),
-            held: BTreeMap::new(),
-            behind: false,
-            failed: None,
-            answers: Vec::new(),
-            plans: record::Plans::default(),
-            lost: false,
-            forgotten: BTreeSet::new(),
-            removals: Vec::new(),
-            ahead: BTreeSet::new(),
-            rebuilding: false,
-            zone: None,
-            sized: None,
+            ..Writer::new(None)
         })
     }
 

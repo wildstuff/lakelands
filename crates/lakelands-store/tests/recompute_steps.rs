@@ -36,7 +36,7 @@ use lakelands_engine_mem::MemoryOpener;
 use lakelands_store::backed::{self, Call, Of, Owed};
 use lakelands_store::lake::Lake;
 use lakelands_store::log::Draft;
-use probed::{Asked, Probe, ProbedOpener, calls};
+use probed::{Asked, Probe, ProbedOpener, calls, wrote};
 use serde_json::{Value, json};
 
 /// A lake on the probed memory engine, written by hand-built events.
@@ -257,16 +257,6 @@ fn output(config: Value, title: &str, output: Value, fills: Option<(&str, &str)>
         output: Some(output),
         output_at: None,
         field: fills.map(|(ty, key)| (ty.into(), key.into(), "sum".into())),
-    }
-}
-
-fn wrote(ty: &str, key: &str, version: u64, fields: Value) -> EventBody {
-    EventBody::RecordUpserted {
-        ty: ty.into(),
-        key: key.into(),
-        version: Version(version),
-        patch: patch(fields),
-        made: false,
     }
 }
 

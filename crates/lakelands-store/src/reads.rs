@@ -193,7 +193,7 @@ mod search;
 mod stage;
 mod text_then;
 
-pub(crate) use edges::{Ends, answered, answered_of};
+pub(crate) use edges::{Ends, answered, answered_of, answered_rows};
 use edges::{Reach, Visible, fuse};
 pub(crate) use held::HeldNow;
 use proposals::stands;

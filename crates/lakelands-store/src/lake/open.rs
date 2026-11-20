@@ -76,6 +76,34 @@ pub(crate) fn opener(
         })
 }
 
+impl Writer {
+    /// A writer that holds `lease` and has read nothing of the log.
+    pub(super) fn new(lease: Option<Lease>) -> Writer {
+        Writer {
+            lease,
+            tip: None,
+            staged: None,
+            closing: BTreeSet::new(),
+            last_known_at: Timestamp(i64::MIN),
+            ontology: Ontology::default().named(),
+            settings: BTreeMap::new(),
+            owed: Vec::new(),
+            held: BTreeMap::new(),
+            behind: false,
+            failed: None,
+            answers: Vec::new(),
+            plans: record::Plans::default(),
+            lost: false,
+            forgotten: BTreeSet::new(),
+            removals: Vec::new(),
+            ahead: BTreeSet::new(),
+            rebuilding: false,
+            zone: None,
+            sized: None,
+        }
+    }
+}
+
 impl Lake {
     /// Open a lake: find its engine among the openers the host passed,
     /// take the lease unless opening read-only, create the lake if asked
@@ -281,28 +309,7 @@ impl Lake {
             sorted_whole: Mutex::new(BTreeMap::new()),
             choosing: Mutex::default(),
             road: Mutex::default(),
-            writer: Mutex::new(Writer {
-                lease,
-                tip: None,
-                staged: None,
-                closing: BTreeSet::new(),
-                last_known_at: Timestamp(i64::MIN),
-                ontology: Ontology::default().named(),
-                settings: BTreeMap::new(),
-                owed: Vec::new(),
-                held: BTreeMap::new(),
-                behind: false,
-                failed: None,
-                answers: Vec::new(),
-                plans: record::Plans::default(),
-                lost: false,
-                forgotten: BTreeSet::new(),
-                removals: Vec::new(),
-                ahead: BTreeSet::new(),
-                rebuilding: false,
-                zone: None,
-                sized: None,
-            }),
+            writer: Mutex::new(Writer::new(lease)),
             keys: Arc::new(crate::sealing::Keys::new(
                 location.lake.clone(),
                 seams_keys,

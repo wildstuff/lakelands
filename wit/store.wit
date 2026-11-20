@@ -15,7 +15,7 @@ interface store {
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
         compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report, erase-report,
-        thin, thin-report, thin-reply, judge, judge-reply,
+        thin, thin-report, thin-reply, judge, judge-reply, vector-coverage-reply,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
         feed-filter, feed-batch, version,
@@ -175,6 +175,16 @@ interface store {
         /// the constraints the principal is shown or one it proposes;
         /// appending nothing (113). It is no tool.
         judge: func(who: principal, %type: type-name, judge: judge) -> result<judge-reply, error>;
+        /// `vector-coverage` of the lake store as `who` is answered it: the
+        /// embedding fields of the type it reads, over the records it is
+        /// answered (116). It is no tool.
+        vector-coverage: func(who: principal, %type: type-name) -> result<vector-coverage-reply, error>;
+        /// `purge-preflight` of the lake store asked by `who` through this
+        /// catalog's context, as a write is judged: answered where `who`
+        /// may retire every record the purge would take, naming only what
+        /// it is shown, and refused not granted otherwise (116). It is no
+        /// tool.
+        purge-preflight: func(who: principal, source: source-id, %type: option<type-name>) -> result<purge-report, error>;
     }
 
     /// The change feed (`ChangeFeed`): the consumer keeps its own
