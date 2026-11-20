@@ -34,6 +34,10 @@ refusal.
   write whose record an earlier entry moved is refused as changed since
   it was proposed, as it would be if the earlier one had been accepted
   alone first.
+- The reads a verb declared are taken from the lake as committed, not
+  as the entries before it left it, as at a lone `accept`. What an
+  earlier entry wrote reaches a later one through the pinned records
+  above, not through the verb's reads.
 - The acceptances and their writes are sealed as one append. Their
   events are contiguous after the head, and each acceptance is followed
   by its own write, caused by it, as at `accept`.

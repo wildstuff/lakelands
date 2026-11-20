@@ -973,14 +973,12 @@ async fn door(
             HeaderValue::from_str(&format!("\"{version}\"")).expect("digits are a header value"),
         );
     }
-    // A list of outcomes, an `accept_many`'s, was written at its last
-    // one; an empty list wrote nothing and answers the head.
-    let position = match v.as_array() {
-        Some(all) => match all.last() {
-            Some(last) => last["position"].as_u64().map(Position),
-            None => store.head().await.ok(),
-        },
-        None => v["position"].as_u64().map(Position),
+    // `accept_many` answers a list of outcomes, written at its last one;
+    // an empty list wrote nothing and answers the head, read or refused.
+    let position = match (&r.door, v.as_array().and_then(|all| all.last())) {
+        (Door::AcceptMany, Some(last)) => last["position"].as_u64().map(Position),
+        (Door::AcceptMany, None) => Some(store.head().await.map_err(contract)?),
+        _ => v["position"].as_u64().map(Position),
     };
     Ok(with_position(answer, position))
 }
