@@ -36,6 +36,11 @@ check!(
 );
 
 check!(
+    ACCEPT_MANY = several_proposals_are_accepted_as_one_or_none,
+    "117 (lakelands#1802): `accept_many` accepts a list of proposals in one append, all or none: each is judged as the ones before it in the list left the lake, so a pinned upsert a sibling earlier in the list wrote over is refused as changed, naming its place in the list and its id; so is a decided proposal or one listed twice; a refusal appends nothing and leaves every proposal of the list pending; a list accepted answers an outcome for each, in order, their events contiguous after the head"
+);
+
+check!(
     ACCEPTED_FOR_THE_PROPOSER = an_accepted_write_names_whom_its_proposer_wrote_for,
     "088 (lakelands#1489): `agent:a`, bound for `human:alice`, proposes an upsert, and `human:bob`, bound for no one, accepts it; `write_accepted` names `human:bob` and no `on_behalf_of`, and the upsert names `agent:a` for `human:alice`, as the proposer wrote it; and (lakelands#1584) the `write_proposed` and the upsert carry the proposer's occasion, `again`, the upsert being the proposer's write, while the `write_accepted` carries the accepter's, `live`, the acceptance being the accepter's act"
 );
@@ -544,6 +549,114 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(store: Store) -
             written.map(|e| (e.body.kind(), e.writer.clone(), e.cause))
         );
     }
+    Ok(())
+}
+
+async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
+    let l = ledger(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    let propose = async |write: Value| {
+        let proposed = cat.propose(own, de(write), "a write".into()).await;
+        proposal(&proposed.must("a proposal")?).map(|(_, id)| id)
+    };
+    // `i` stands at version 1: both are pinned there, so the second is
+    // judged after the first has moved it.
+    let pinned = |status: &str| {
+        json!({"write": "upsert", "type": "invoice", "key": "i",
+               "patch": {"status": status}, "opts": {"expected_version": 1}})
+    };
+    let first = propose(pinned("held")).await?;
+    let second = propose(pinned("sent")).await?;
+    let decided = propose(pinned("late")).await?;
+    cat.reject(own, &decided, "no".into())
+        .await
+        .must("rejecting a proposal")?;
+    let pending = async |ids: &[&ProposalId]| -> Result<bool, Failure> {
+        let listed = cat.proposals(own, ProposalFilter::default());
+        let listed = listed.await.must("listing proposals")?.data;
+        Ok(ids.iter().all(|id| {
+            listed
+                .iter()
+                .any(|p| p.id == **id && p.state == ProposalState::Pending)
+        }))
+    };
+    // The moved upsert is refused as a lone accept of it would be: its
+    // pinned version is no longer the record's.
+    for (list, at, moved, why) in [
+        (
+            vec![first.clone(), second.clone()],
+            1,
+            true,
+            "a pinned upsert a sibling moved",
+        ),
+        (
+            vec![first.clone(), decided.clone()],
+            1,
+            false,
+            "a decided proposal",
+        ),
+        (
+            vec![first.clone(), first.clone()],
+            1,
+            false,
+            "a proposal listed twice",
+        ),
+    ] {
+        let before = store.head().await.must("reading the head")?;
+        let err = cat.accept_many(own, &list).await.must_fail(why)?;
+        head_unmoved(store.as_ref(), before, why).await?;
+        ensure!(
+            matches!(&err, Error::Accepting { index, proposal, error }
+            if *index == at && *proposal == list[at as usize]
+                && match **error {
+                    Error::Conflict { .. } => moved,
+                    Error::Refused { .. } => !moved,
+                    _ => false,
+                }),
+            "accepting a list holding {why} at {at} must be refused naming that place, \
+             its id and why; it failed with {err:?}"
+        );
+        ensure!(
+            pending(&[&first, &second]).await?,
+            "a refused list must leave its proposals pending ({why})"
+        );
+    }
+    let free = |status: &str| json!({"write": "upsert", "type": "invoice", "key": "i", "patch": {"status": status}});
+    let (a, b) = (propose(free("held")).await?, propose(free("sent")).await?);
+    let before = store.head().await.must("reading the head")?;
+    let accepted = cat.accept_many(own, &[a.clone(), b.clone()]).await;
+    let accepted = accepted.must("accepting two proposals together")?;
+    let head = store.head().await.must("reading the head")?;
+    let r = l.read("invoice", "i").await?;
+    let logged = kinds_from(store.as_ref(), before.next()).await?;
+    let accepts = logged
+        .iter()
+        .filter(|b| matches!(b, EventBody::WriteAccepted { .. }))
+        .count();
+    ensure!(
+        accepted.len() == 2
+            && accepted[0].position() < accepted[1].position()
+            && accepted[1].position() == head
+            && accepts == 2
+            && logged.len() == 4
+            && value(&r, "status") == Some(&json!("sent")),
+        "two proposals accepted together must append each acceptance and its write, \
+         in list order, and answer an outcome for each; it answered {accepted:?}, \
+         appended {:?}, and `status` reads {:?}",
+        logged.iter().map(EventBody::kind).collect::<Vec<_>>(),
+        value(&r, "status")
+    );
+    let before = store.head().await.must("reading the head")?;
+    let again = cat
+        .accept_many(own, &[a])
+        .await
+        .must_fail("accepting it again")?;
+    head_unmoved(store.as_ref(), before, "accepting an accepted one").await?;
+    ensure!(
+        matches!(&again, Error::Accepting { index: 0, error, .. }
+            if matches!(**error, Error::Refused { reason: Refusal::Decided, .. })),
+        "an accepted proposal listed again is refused as decided at 0; it failed with {again:?}"
+    );
     Ok(())
 }
 

@@ -2,6 +2,27 @@
 //! proposer is told of it.
 
 use super::*;
+use crate::lake::Reads;
+use lakelands_api::engine::{CanonicalEvent, Lease};
+use std::ops::RangeInclusive;
+
+/// An accept of a list: its outcome, and where its events stand.
+pub type Many = (Outcome, RangeInclusive<Position>);
+
+/// A view, and what a list's accepts before this one wrote past it.
+type Viewed<'a> = (&'a dyn ProjectionView, &'a Pending);
+
+/// What an `accept_many` decided so far, for its one append (117): what
+/// the accepts before wrote, which proposals they were, and their events.
+#[derive(Default)]
+struct Batch {
+    pending: Pending,
+    done: BTreeSet<ProposalId>,
+    lease: Option<Lease>,
+    events: Vec<Event>,
+    stored: Vec<CanonicalEvent>,
+    lens: Vec<usize>,
+}
 
 impl Call<'_> {
     /// The `write_proposed` of `write`, which lands next under the writer
@@ -472,8 +493,8 @@ impl Call<'_> {
     /// once the record it writes or its type changed after it, or, for a
     /// link, an end record, as deep as its ends go, or a record its call
     /// reads across a reference: its proposer was judged on them as they
-    /// stood (051).
-    fn unmoved(&self, w: &Writer, view: &dyn ProjectionView, at: Position) -> Result<()> {
+    /// stood (051). So once an accept before it in a list wrote one (117).
+    fn unmoved(&self, w: &Writer, (view, pending): Viewed<'_>, at: Position) -> Result<()> {
         let o = &w.ontology;
         let logged = self.lake.read_events(at, 1)?;
         let Some(EventBody::WriteProposed {
@@ -514,7 +535,7 @@ impl Call<'_> {
             _ => None,
         });
         let moved_at = |ty: &TypeName, key: &RecordKey| -> Result<bool> {
-            Ok(view.get(ty, key)?.is_some_and(|r| r.position > at))
+            Ok(pending.holds(ty, key) || view.get(ty, key)?.is_some_and(|r| r.position > at))
         };
         // A link is its holder's by its end records too, and a change to
         // an end moves no link.
@@ -540,6 +561,63 @@ impl Call<'_> {
         check_context(self.lake, &self.context, self.who)?;
         granted(self.who.grants.review)?;
         let mut w = self.writer()?;
+        let accepted = self.accepting(&mut w, (proposal, asked), plan_id, None)?;
+        Ok(accepted.expect("an accept alone is appended"))
+    }
+
+    /// `accept_many`: each proposal's accept decided after the ones before
+    /// it, then all appended at once, or none where one is refused, which
+    /// is answered naming it (117). Answers each outcome and its events.
+    pub fn accept_many(&self, list: &[ProposalId], asked: &Principal) -> Result<Vec<Many>> {
+        check_context(self.lake, &self.context, self.who)?;
+        granted(self.who.grants.review)?;
+        let (mut w, mut b) = (self.writer()?, Batch::default());
+        let w = &mut *w;
+        let decided = list.iter().enumerate().try_for_each(|(index, proposal)| {
+            let again = !b.done.insert(proposal.clone());
+            let refused = |e| {
+                let (index, proposal, error) = (index as u64, proposal.clone(), Box::new(e));
+                Error::Accepting {
+                    index,
+                    proposal,
+                    error,
+                }
+            };
+            match again {
+                true => Err(Error::refused(None, Refusal::Decided)),
+                false => (self.accepting(w, (proposal, asked), None, Some(&mut b))).map(drop),
+            }
+            .map_err(refused)
+        });
+        w.staged = None;
+        decided?;
+        let Some(lease) = b.lease else {
+            return Ok(Vec::new());
+        };
+        let stamped = (lease, b.events, b.stored);
+        let events = (self.lake).append_stamped(w, stamped, Reads::default())?;
+        let mut from = 0;
+        let told = |n: &usize| {
+            let e = &events[from..from + n];
+            from += n;
+            let (first, last) = (e[0].position, e[n - 1].position);
+            let outcome = self.answered(e, Vec::new());
+            let outcome = self.told_of(&w.ontology, e, outcome, Some(last))?;
+            Ok((outcome, first..=last))
+        };
+        b.lens.iter().map(told).collect()
+    }
+
+    /// An accept, under the writer `w`: appended alone, or, with `batch`,
+    /// decided after what the accepts before it in the list left and staged
+    /// for their append, and answered nothing.
+    fn accepting(
+        &self,
+        w: &mut Writer,
+        (proposal, asked): (&ProposalId, &Principal),
+        plan_id: Option<&str>,
+        mut batch: Option<&mut Batch>,
+    ) -> Result<Option<(Outcome, Option<External>)>> {
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
         // A call whose verb is withdrawn since is judged by the lake as it
@@ -560,14 +638,16 @@ impl Call<'_> {
         let listed = self.listed(&p, asked)?;
         // Before a retry is answered: an accept sent again would hand a
         // holder of `only` what an earlier accepter was answered (051).
-        self.decides(&w, &p, &listed)?;
+        self.decides(w, &p, &listed)?;
         // It accepts only what it is listed whole, as a reviewer without
         // the grant would be answered; listed in part, it may reject
         // (051, lakelands#867).
         granted(listed.0.is_some() && !listed.1)?;
-        if p.state != ProposalState::Pending {
-            let again = self.accepted_again(&w, view.as_ref(), proposal)?;
-            return Ok((again, None));
+        if p.state != ProposalState::Pending && batch.is_some() {
+            return Err(Error::refused(None, Refusal::Decided));
+        } else if p.state != ProposalState::Pending {
+            let again = self.accepted_again(w, view.as_ref(), proposal)?;
+            return Ok(Some((again, None)));
         }
         // A change of the ontology is the lake's `schema` grant's to make:
         // the accepter holds it as well as `review` (013, extended).
@@ -579,6 +659,12 @@ impl Call<'_> {
             };
             return Err(lakelands_core::damaged(Part::Projection, None, flaw));
         };
+        // A list takes what one append decides alone: records and the
+        // store's own verbs (117).
+        use ProposedWrite::{Call as Verb, Retire, Upsert};
+        if batch.is_some() && !matches!(write, Upsert { .. } | Retire { .. } | Verb { .. }) {
+            return Err(Error::refused(None, Refusal::WrongDoor));
+        }
         granted(!write.is_schema() || self.who.grants.schema)?;
         // A change to records whose proposer held `restricted` is accepted
         // only by a holder of it: one without would leave out what its
@@ -612,7 +698,7 @@ impl Call<'_> {
                 plan: Some(id),
                 report: None,
             };
-            self.planned(&mut w, change, When::Plan, against)?;
+            self.planned(w, change, When::Plan, against)?;
         }
         // A proposed call is accepted while the record still makes it: the
         // reviewer judged those inputs. The fold leaves the call owed, made
@@ -627,7 +713,7 @@ impl Call<'_> {
         {
             let then = self.lake.engine.view(Some(p.position))?.get(ty, key)?;
             let now = view.get(ty, key)?;
-            let made = crate::backed::call_now(self.lake, &w, view.as_ref(), ty, now.as_ref())?;
+            let made = crate::backed::call_now(self.lake, w, view.as_ref(), ty, now.as_ref())?;
             if !made.iter().any(|(f, i)| f == field && i == input) {
                 let version = |r: Option<&lakelands_api::record::StoredRecord>| {
                     r.map_or(Version(0), |r| r.version)
@@ -640,7 +726,7 @@ impl Call<'_> {
             write,
             ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. }
         ) {
-            let now = self.lake.clock(&mut w);
+            let now = self.lake.clock(w);
             let accepted = Draft {
                 id: Some(log::accepted_id(&self.lake.id, proposal)),
                 ..self.draft(
@@ -652,11 +738,10 @@ impl Call<'_> {
                 )
             };
             drop(view);
-            let events = self.lake.append(&mut w, vec![accepted])?;
-            return Ok((outcome_of(&events), None));
+            let events = self.lake.append(w, vec![accepted])?;
+            return Ok(Some((outcome_of(&events), None)));
         }
-        self.unmoved(&w, view.as_ref(), p.position)?;
-        let now = self.lake.clock(&mut w);
+        let now = self.lake.clock(w);
         // The write was checked under the proposer's grants when it was
         // proposed; it is applied as the proposer, with what was checked.
         // Its `restricted` grant is not logged: it held it where the write
@@ -674,7 +759,7 @@ impl Call<'_> {
                 },
             )
         };
-        let accepted_at = position_after(&w, 0);
+        let accepted_at = position_after(w, 0);
         let mut drafts = vec![accepted];
         // Whom the proposer wrote for, and its occasion, go with it, never
         // the accepter's (088); the `write_accepted` keeps the accepter's.
@@ -695,7 +780,11 @@ impl Call<'_> {
         let mut records_plan = None;
         // The proposer's events are written as the proposer and caused by
         // the acceptance before their record is computed.
-        let mut d = self.decide(&w, view.as_ref(), now, 1);
+        let mut d = self.decide(w, view.as_ref(), now, 1);
+        if let Some(b) = batch.as_deref_mut() {
+            std::mem::swap(&mut d.pending, &mut b.pending);
+        }
+        self.unmoved(w, (view.as_ref(), &d.pending), p.position)?;
         d.at.sight = Sight::held(&proposer, &w.ontology);
         d.at.reviewer = Some(Sight::held(self.who, &w.ontology));
         (d.envelope.writer, d.envelope.cause) = (Some(p.proposer.clone()), Some(accepted_at));
@@ -765,6 +854,11 @@ impl Call<'_> {
                     return Err(Error::invalid(Case::VerbRedeclared { verb }));
                 }
                 if let VerbEffect::External { executor } = &decl.effect {
+                    // A call handed to an executor is accepted alone: its
+                    // handoff answers for that one acceptance (117).
+                    if batch.is_some() {
+                        return Err(Error::refused(None, Refusal::WrongDoor));
+                    }
                     bound_executor(self.lake, executor)?;
                     external = Some(External {
                         executor: executor.clone(),
@@ -818,7 +912,7 @@ impl Call<'_> {
                 self.check_bundle(&w.ontology, declarations)?;
                 let mut changed = declarations.clone();
                 changed.retain(|d| !w.ontology.in_force(d));
-                let own = self.bundle_drafts(&w, changed, (now, drafts.len(), Judging::Act))?;
+                let own = self.bundle_drafts(w, changed, (now, drafts.len(), Judging::Act))?;
                 sections.0 = own.types;
                 drafts.extend(own.drafts.into_iter().map(&as_accepted));
             }
@@ -836,7 +930,7 @@ impl Call<'_> {
                 // names are judged again.
                 let judged = (&**migration, None, Some(&proposer));
                 let plan =
-                    self.preflight_plan(&w, view.as_ref(), judged, (Some(now), Judging::Act))?;
+                    self.preflight_plan(w, view.as_ref(), judged, (Some(now), Judging::Act))?;
                 // So would it take away a mark set since, which the hash
                 // does not cover: it restates what its report said, no more.
                 if plan.report.restated != report.restated {
@@ -844,10 +938,10 @@ impl Call<'_> {
                 }
                 let sight = Sight::held(self.who, &w.ontology);
                 renamed = Self::known_renames(&sight, &w.ontology, migration);
-                sections.0 = vec![self.shown(&w, migration, plan.report.clone())?];
+                sections.0 = vec![self.shown(w, migration, plan.report.clone())?];
                 (sections.0).extend(plan::others_shown(&sight, plan.others.clone()));
                 let (first, same) = (drafts.len(), unchanged(&w.ontology, migration, &plan));
-                let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
+                let own = self.migration_drafts(w, (**migration).clone(), plan, now, first)?;
                 let own = own.into_iter().filter(|_| !same);
                 drafts.extend(own.map(&as_accepted));
             }
@@ -872,7 +966,7 @@ impl Call<'_> {
                     renames: renames.clone(),
                 };
                 let plan =
-                    self.preflight_value_type(&w, view.as_ref(), &m, (Some(now), Judging::Act))?;
+                    self.preflight_value_type(w, view.as_ref(), &m, (Some(now), Judging::Act))?;
                 // Renames reach only the fields the proposal's report named:
                 // one that came to use the value type since would be
                 // rewritten unseen by the proposer and the reviewer.
@@ -887,7 +981,7 @@ impl Call<'_> {
                 }
                 fits(plan.report.clone(), false)?;
                 sections.1 = vec![self.shown_value_type(&w.ontology, plan.report.clone())];
-                let own = self.value_type_drafts(&w, m, plan, now, drafts.len())?;
+                let own = self.value_type_drafts(w, m, plan, now, drafts.len())?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
             // Selected and judged as its reviewer's `enact` would, within
@@ -923,7 +1017,7 @@ impl Call<'_> {
                     report: None,
                 };
                 let at = (now, drafts.len(), Some(envelope));
-                let planned = self.changing(&w, records, at, against)?;
+                let planned = self.changing(w, records, at, against)?;
                 drafts.extend(planned.drafts);
                 records_plan = Some(planned.plan);
             }
@@ -931,8 +1025,21 @@ impl Call<'_> {
                 unreachable!("a proposed call is accepted above")
             }
         }
+        if let Some(b) = batch {
+            std::mem::swap(&mut d.pending, &mut b.pending);
+            drop(d);
+            drop(view);
+            let drafts = self.lake.closing(w, drafts)?;
+            let (lease, events, stored) = self.lake.stamp(w, drafts)?;
+            let last = events.last().expect("an accept writes its acceptance");
+            w.staged = Some((last.position, last.hash.clone()));
+            (b.lease, _) = (Some(lease), b.lens.push(events.len()));
+            b.events.extend(events);
+            b.stored.extend(stored);
+            return Ok(None);
+        }
         drop(view);
-        let appended = self.lake.append(&mut w, drafts);
+        let appended = self.lake.append(w, drafts);
         let by = MadeDue::Accepted;
         let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, by))?;
         let outcome = self.answered(&events, renamed);
@@ -943,12 +1050,12 @@ impl Call<'_> {
             outcome = with_declared(outcome, &w.ontology, declarations, accepted_at);
         }
         if let (true, Outcome::Applied { plan, .. }) = (write.is_schema(), &mut outcome) {
-            *plan = Some(Box::new(plan::plan_of(self.lake, &w, sections)?));
+            *plan = Some(Box::new(plan::plan_of(self.lake, w, sections)?));
         }
         if let (Some(p), Outcome::Applied { plan, .. }) = (records_plan, &mut outcome) {
             *plan = Some(Box::new(p));
         }
-        Ok((outcome, external))
+        Ok(Some((outcome, external)))
     }
 
     /// A refusal of the proposer's plan as an accept answers its reviewer

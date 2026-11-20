@@ -2166,6 +2166,10 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             // as an `ingest-error`, its places beside its refusal
             // (lakelands#1043).
             Error::Ingested { .. } => {}
+            // A refused proposal of an `accept-many`: answered as an
+            // `accept-error`, its place and id beside its refusal
+            // (lakelands#1802).
+            Error::Accepting { .. } => {}
             // A newer lake's kind, which a component built against this
             // WIT cannot be sent.
             Error::Unknown(_) => {}

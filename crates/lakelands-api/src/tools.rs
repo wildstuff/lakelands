@@ -120,6 +120,10 @@ crate::tagged_enum! {
         Proposals,
         /// `accept`.
         Accept,
+        /// `accept_many`: several proposals accepted as one, all or none.
+        /// Served over REST only, as `declare` is
+        /// (`docs/decisions/117-several-proposals-are-accepted-as-one.md`).
+        AcceptMany,
         /// `reject`.
         Reject,
         /// `declare` of a type.

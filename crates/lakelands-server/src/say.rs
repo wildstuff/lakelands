@@ -127,6 +127,24 @@ impl From<Error> for Failure {
                 todo,
             };
         }
+        // A refused proposal of an `accept_many`: the list was not written,
+        // and a proposal of a kind the list does not take is accepted alone.
+        if let Error::Accepting { index, error, .. } = &e {
+            let todo = match &**error {
+                Error::Refused {
+                    reason: Refusal::WrongDoor,
+                    ..
+                } => format!("accept proposal {index} alone, then the others together"),
+                inner => format!(
+                    "{}; then send the list again, or the list without proposal {index}",
+                    Failure::from(inner.clone()).todo
+                ),
+            };
+            return Failure {
+                what: e.to_string(),
+                todo,
+            };
+        }
         if let Some(todo) = e.case().and_then(|said| advice(&said.case)) {
             return Failure {
                 what: e.to_string(),
@@ -292,7 +310,9 @@ impl From<Error> for Failure {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }
             Error::Unknown(_) => "do what the message says".to_owned(),
-            Error::Ingested { .. } => unreachable!("a refused record is said above"),
+            Error::Ingested { .. } | Error::Accepting { .. } => {
+                unreachable!("a refused record or proposal of a list is said above")
+            }
         };
         Failure {
             what: e.to_string(),

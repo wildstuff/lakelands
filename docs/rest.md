@@ -145,6 +145,7 @@ key may hold any character.
 | `GET …/proposals` | proposals | query: `state`, `type`, `kind`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
 | `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, `migrate` with `migration`, or `records` with `type`, `where` and `to`), `why` |
 | `POST …/proposals/<id>/accept` | accept | — |
+| `POST …/proposals/accept_many` | accept several proposals in one commit, each checked after the ones before it; none is accepted where one is refused, answered as its refusal with its `index` (from 0) and `proposal` beside | body: `proposals` |
 | `POST …/proposals/<id>/accept_planned` | accept a proposed change to the ontology, or to records, against the plan of its change at the head; a records proposal is accepted only so | body: `plan_id` |
 | `POST …/proposals/<id>/reject` | reject | body: `reason` (optional) |
 | `POST …/schema/declare_type` | declare a type | body: `type` |

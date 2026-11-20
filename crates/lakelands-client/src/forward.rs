@@ -389,6 +389,10 @@ impl Catalog for ForwardingCatalog {
         forward!(self, c => c.accept(who, proposal);)
     }
 
+    async fn accept_many(&self, who: &Principal, proposals: &[ProposalId]) -> Result<Vec<Outcome>> {
+        forward!(self, c => c.accept_many(who, proposals);)
+    }
+
     async fn accept_planned(
         &self,
         who: &Principal,

@@ -49,6 +49,9 @@ fn intent(e: &Error) -> &'static str {
         Error::Ingested { .. } => {
             "a record of an ingest was refused: its refusal, and where to resume"
         }
+        Error::Accepting { .. } => {
+            "a proposal of a list was refused: which, and why; none accepted"
+        }
         Error::Unknown(_) => "an error of a kind a newer lake knows: its message says it",
     }
 }

@@ -1126,6 +1126,25 @@ impl Catalog for Doors {
         self.detached(who, (MadeDue::Accepted, false), accept).await
     }
 
+    async fn accept_many(&self, who: &Principal, proposals: &[ProposalId]) -> Result<Vec<Outcome>> {
+        let (doors, who, list) = (self.clone(), who.clone(), proposals.to_vec());
+        // In a task of its own, as an accept alone is: a caller who goes
+        // away does not stop it between its append and its answer.
+        let task = tokio::spawn(async move {
+            let asked = who.clone();
+            let accept = move |c: &Call<'_>| owing(|| c.accept_many(&list, &asked));
+            let (accepted, own) = doors.write(&who, accept).await?;
+            let mut outcomes = Vec::with_capacity(accepted.len());
+            for (outcome, at) in accepted {
+                let own = own.range(at).copied().collect();
+                let by = (MadeDue::Accepted, false);
+                outcomes.push(doors.handed(&who, ((outcome, None), own), by).await?);
+            }
+            Ok(outcomes)
+        });
+        task.await.unwrap_or_else(|e| Err(exec::stopped(&e)))
+    }
+
     async fn accept_planned(
         &self,
         who: &Principal,

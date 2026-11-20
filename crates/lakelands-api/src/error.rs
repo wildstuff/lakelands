@@ -95,6 +95,19 @@ pub enum Error {
         /// for it.
         quarantine_full: Option<crate::quarantine::QuarantineFull>,
     },
+    /// A proposal of an `accept_many` was refused (lakelands#1802): its
+    /// place in the list, counted from 0, its id, and the refusal; nothing
+    /// of the list was accepted. On the wire it is the refusal with
+    /// `index` and `proposal` beside it; [`Error::unwrapped`] answers it.
+    #[serde(skip)]
+    Accepting {
+        /// The proposal's place in the list.
+        index: u64,
+        /// The proposal.
+        proposal: ProposalId,
+        /// The refusal.
+        error: Box<Error>,
+    },
     /// An error of a kind this build does not know: a newer lake's.
     #[serde(skip)]
     Unknown(Unknown),
@@ -116,9 +129,26 @@ impl Serialize for Plain {
 }
 
 /// Its data, and `message`, its sentence; a refused record of an ingest
-/// as its refusal, with where it stood in the stream beside it.
+/// as its refusal, with where it stood in the stream beside it; a refused
+/// proposal of a list likewise.
 impl Serialize for Error {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let custom = <S::Error as serde::ser::Error>::custom::<String>;
+        let inner = |error: &Error| match serde_json::to_value(error) {
+            Ok(Value::Object(map)) => Ok(map),
+            other => Err(custom(format!("{other:?} is no error"))),
+        };
+        if let Error::Accepting {
+            index,
+            proposal,
+            error,
+        } = self
+        {
+            let mut map = inner(error)?;
+            map.insert("index".into(), Value::from(*index));
+            map.insert("proposal".into(), Value::from(proposal.as_str()));
+            return map.serialize(s);
+        }
         let Error::Ingested {
             index,
             from,
@@ -129,11 +159,7 @@ impl Serialize for Error {
         else {
             return closed::serialize(&Plain(self.clone()), s);
         };
-        let custom = <S::Error as serde::ser::Error>::custom::<String>;
-        let mut map = match serde_json::to_value(error).map_err(|e| custom(e.to_string()))? {
-            Value::Object(map) => map,
-            other => return Err(custom(format!("{other} is no error"))),
-        };
+        let mut map = inner(error)?;
         let record = closed::serialize(record, serde_json::value::Serializer);
         let record = record.map_err(|e| custom(e.to_string()))?;
         map.insert("index".into(), Value::from(*index));
@@ -184,6 +210,22 @@ impl<'de> Deserialize<'de> for Error {
                 record,
                 error,
                 quarantine_full,
+            });
+        }
+        // A refused proposal of a list: its refusal, with its place beside.
+        if map.contains_key("proposal") && map.get("index").is_some_and(Value::is_u64) {
+            let custom = <D::Error as serde::de::Error>::custom::<String>;
+            let index = map
+                .remove("index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default();
+            let proposal = crate::strict::value(map.remove("proposal").unwrap_or_default())?;
+            let error = Error::deserialize(Value::Object(map));
+            let error = Box::new(error.map_err(|e| custom(e.to_string()))?);
+            return Ok(Error::Accepting {
+                index,
+                proposal,
+                error,
             });
         }
         let message = match map.get("message") {
@@ -263,7 +305,7 @@ impl Error {
     /// (lakelands#1043).
     pub fn unwrapped(&self) -> &Error {
         match self {
-            Error::Ingested { error, .. } => error.unwrapped(),
+            Error::Ingested { error, .. } | Error::Accepting { error, .. } => error.unwrapped(),
             e => e,
         }
     }
@@ -674,6 +716,14 @@ impl fmt::Display for Error {
                 }
                 write!(f, "; nothing from record {from} on was written")
             }
+            Error::Accepting {
+                index,
+                proposal,
+                error,
+            } => write!(
+                f,
+                "proposal {index} of the list ({proposal}): {error}; none was accepted"
+            ),
             // A refusal of a kind this build does not know is its sentence.
             Error::Refused {
                 reason: reason @ Refusal::Unknown(_),

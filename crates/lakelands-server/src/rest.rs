@@ -93,7 +93,7 @@ fn failure_json(e: &Error, f: &Failure) -> Value {
 /// The status a contract error answers with.
 fn status_of(e: &Error) -> StatusCode {
     match e {
-        Error::Ingested { error, .. } => status_of(error),
+        Error::Ingested { error, .. } | Error::Accepting { error, .. } => status_of(error),
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted
             | Refusal::GrantNeeded { .. }
@@ -621,6 +621,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
         (["proposals"], Method::POST) => r(
             Door::Propose,
             "POST …/proposals",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
+        (["proposals", "accept_many"], Method::POST) => r(
+            Door::AcceptMany,
+            "POST …/proposals/accept_many",
             none,
             &[],
             BodyAs::Args,

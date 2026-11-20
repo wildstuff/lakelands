@@ -396,6 +396,9 @@ impl Catalog for Doors {
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         self.inner.accept(who, proposal).await
     }
+    async fn accept_many(&self, who: &Principal, proposals: &[ProposalId]) -> Result<Vec<Outcome>> {
+        self.inner.accept_many(who, proposals).await
+    }
     async fn reject(
         &self,
         who: &Principal,
