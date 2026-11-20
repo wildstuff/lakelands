@@ -973,7 +973,16 @@ async fn door(
             HeaderValue::from_str(&format!("\"{version}\"")).expect("digits are a header value"),
         );
     }
-    Ok(with_position(answer, v["position"].as_u64().map(Position)))
+    // A list of outcomes, an `accept_many`'s, was written at its last
+    // one; an empty list wrote nothing and answers the head.
+    let position = match v.as_array() {
+        Some(all) => match all.last() {
+            Some(last) => last["position"].as_u64().map(Position),
+            None => store.head().await.ok(),
+        },
+        None => v["position"].as_u64().map(Position),
+    };
+    Ok(with_position(answer, position))
 }
 
 fn fault_answer(f: Fault) -> Stop {
