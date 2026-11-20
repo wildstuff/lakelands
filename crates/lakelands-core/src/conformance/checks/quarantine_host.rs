@@ -68,6 +68,11 @@ check!(
     "085, extended: a principal without `ingest` is refused `not_granted` by `quarantine`, one with it is answered `not_found` for a type it is not shown, and neither appends"
 );
 
+check!(
+    QUARANTINED_BY_HOST_CAUSE_SHOWN = a_host_cause_is_listed_to_every_reader,
+    "085, extended: the cause code of a record the host refused is listed as `cause` to the owner and to a reader shown its refusal's kind alone, with `more`, though not the host's sentence; a record the lake refused lists no `cause`"
+);
+
 /// The host's refusal of `record`, at `line` where given.
 fn refused(record: SourceRecord, line: Option<u64>) -> HostRefused {
     HostRefused {
@@ -632,5 +637,50 @@ async fn only_a_holder_of_ingest_quarantines(store: Store) -> Held {
     );
     let after = events_after(store.as_ref(), head).await?;
     ensure!(after.is_empty(), "the refused calls appended {after:?}");
+    Ok(())
+}
+
+async fn a_host_cause_is_listed_to_every_reader(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    let h1 = refused(inv("h1", json!(5), None), Some(1));
+    host(&l, &l.own, run("r"), h1)
+        .await
+        .must("quarantining `h1` the host refused")?;
+    fed(
+        &l,
+        &l.own,
+        "erp",
+        kept("d"),
+        vec![inv("x1", json!(1), Some("nope"))],
+    )
+    .await
+    .must("quarantining `x1` the lake refused")?;
+    let narrowed = holder(
+        store.as_ref(),
+        "narrowed",
+        json!({"default": "read", "ingest": true,
+            "types": {"invoice": {"default": "read", "fields": {"note": "none"}}}}),
+    );
+    let cause = |q: &Option<Quarantined>| q.as_ref().map(|q| q.cause.clone());
+    let owned = row_of(&l, &l.own, qid("erp", "r", 1)).await?;
+    let shown = row_of(&l, &narrowed, qid("erp", "r", 1)).await?;
+    let sentence = shown.as_ref().map(|q| json!(q).to_string());
+    ensure!(
+        owned.as_ref().is_some_and(by_host)
+            && cause(&owned) == Some(Some("mapping".into()))
+            && shown.as_ref().is_some_and(|q| q.more && !by_host(q))
+            && cause(&shown) == Some(Some("mapping".into()))
+            && sentence.is_some_and(|s| !s.contains("column 3")),
+        "`h1`'s cause must be listed to the owner, {owned:?}, and, its sentence withheld, \
+         to a reader shown its refusal's kind alone, {shown:?}"
+    );
+    for who in [&l.own, &narrowed] {
+        let x1 = row_of(&l, who, qid("erp", "d", 0)).await?;
+        ensure!(
+            x1.is_some() && cause(&x1) == Some(None),
+            "a record the lake refused must list no cause; it lists {x1:?}"
+        );
+    }
     Ok(())
 }

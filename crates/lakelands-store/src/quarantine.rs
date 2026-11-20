@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
-use lakelands_api::error::Named;
+use lakelands_api::error::{Case, Named};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::quarantine::{
     ClosedWhy, QuarantineClose, QuarantineFilter, QuarantineId, QuarantineState, Quarantined,
@@ -113,6 +113,7 @@ pub(crate) fn version_row(ontology: &Ontology, e: &Event) -> Option<Quarantined>
         upstream: upstream.clone(),
         refusal: refusal.clone(),
         more: false,
+        cause: None,
         closed: None,
     })
 }
@@ -175,12 +176,15 @@ pub(crate) fn there(sight: &Sight<'_>, live: Option<&StoredRecord>, q: &Quaranti
 
 /// `q` as its reader is shown it: its cells by their fields' sight, those
 /// masked named, and its refusal whole only where every name it holds is
-/// shown, its kind alone otherwise, with `more` (085).
+/// shown, its kind alone otherwise, with `more`; the host's `cause` always (085).
 pub(crate) fn shown(
     sight: &Sight<'_>,
     live: Option<&StoredRecord>,
     mut q: Quarantined,
 ) -> Quarantined {
+    if let Some(Case::RefusedByHost { cause, .. }) = q.refusal.case().map(|s| &s.case) {
+        q.cause = Some(cause.clone());
+    }
     let Ok(decl) = sight.ty(&q.ty) else {
         return q;
     };
@@ -300,8 +304,7 @@ impl Lake {
             };
             out.push(d);
             if let Some((now, id)) = erase {
-                self.erased
-                    .store(true, std::sync::atomic::Ordering::Release);
+                (self.erased).store(true, std::sync::atomic::Ordering::Release);
                 // The delivery's apart keys go as the act's would; the
                 // restate the erase owes destroys them (row 10).
                 let apart = crate::erase::apart_on_close(self, w, &id, at)?;

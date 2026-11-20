@@ -243,6 +243,21 @@ kind alone is its `error` and, for a refusal, its `reason` code, with
 the one shape, `refusal`, either way, and `more` tells a reader which
 it holds.
 
+**The host's cause** is listed beside it as `cause`, to every reader
+the row is there to, its refusal whole or its kind alone. The lake
+checks only its form, 1 to 64 bytes of `a`–`z`, `0`–`9` and `_`. That
+it holds no cell's value and no field's name is the host's duty, which
+`HostRefused::cause` states: the lake cannot tell a code from a value,
+and a reader whose sight withholds both reads it. The sentence beside
+it may name either, and stays inside the refusal.
+A host that works its queue under a narrowed principal reads by it what
+went wrong without reading the queue again as its owner. `cause` is
+read from the refusal the row keeps, at the listing, and nothing is
+stored for it; a record the lake refused lists none. A refusal's kind
+alone keeping its case's codes was weighed and not taken: it would
+change the shape of every narrowed refusal, where one field changes
+none.
+
 ### A quarantined record is worked by a holder of `ingest`, under the sight of its type
 
 `Catalog::quarantined(who, filter)` lists quarantined records by source,
@@ -586,3 +601,5 @@ of a format step.
   stored shape is unchanged, and the log stays at format 22.
 - Amended by 115 (lakelands#1736), proposed for 0.24.0: `removed` also
   names an erase, and a close may erase in its append.
+- The host's cause listed to every reader as `cause` (lakelands#1807),
+  read at the listing; nothing stored changes.

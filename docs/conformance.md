@@ -385,6 +385,7 @@ belongs in the suite, not beside one engine:
 - `a_record_the_host_refused_lives_as_one_the_lake_refused` — 085, extended: of three records the host refused, one dismissed closes `dismissed` and sent again is a duplicate, one whose key a re-run lands closes `landed`, and one a resubmission names closes `resubmitted`
 - `a_record_the_host_refused_keeps_its_cells_protected` — 085, extended: an erasable cell of a record the host refused is sealed in the log and the export, and read back by the owner; a sensitive cell is masked to a reader without its field's right and shown with it; neither a refusal of the door nor the request's debug form holds a cell's value
 - `only_a_holder_of_ingest_quarantines` — 085, extended: a principal without `ingest` is refused `not_granted` by `quarantine`, one with it is answered `not_found` for a type it is not shown, and neither appends
+- `a_host_cause_is_listed_to_every_reader` — 085, extended: the cause code of a record the host refused is listed as `cause` to the owner and to a reader shown its refusal's kind alone, with `more`, though not the host's sentence; a record the lake refused lists no `cause`
 
 **constraints**
 

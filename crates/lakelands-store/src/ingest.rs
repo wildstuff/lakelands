@@ -771,10 +771,7 @@ fn quarantining(
         },
         |q| q.id.clone(),
     );
-    let last = match target {
-        Some(q) => Some(q.clone()),
-        None => rows.row(view, &id)?,
-    };
+    let last = (target.cloned()).map_or_else(|| rows.row(view, &id), |q| Ok(Some(q)))?;
     let sealed = sealing((lake, w, view, now), apart, pair, (decl, &r.fields));
     let sealed = sealed.map_err(|e| ingested(e, index, first, r))?;
     let body = |version: u32| EventBody::RecordQuarantined {
@@ -849,6 +846,7 @@ fn quarantining(
         upstream: r.upstream.clone(),
         refusal: e,
         more: false,
+        cause: None,
         closed: None,
     };
     rows.rows.insert(id.clone(), row);
