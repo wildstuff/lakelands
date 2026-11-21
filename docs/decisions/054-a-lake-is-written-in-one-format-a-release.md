@@ -71,7 +71,10 @@ that restated it.
     import, the verification of an export) opens its events through one
     check, which refuses an event in another format at its position as
     the flaw `format_other`, naming both numbers. A log that mixes
-    formats is refused at its first event of another. An open judges
+    formats is refused at its first event of another, a format the
+    release does not read; one carried up from 23 to 24 is read, and an
+    event in a format below one before it is refused as `format_falls`
+    (lakelands#1824). An open judges
     the two ends alone; an event of another format between them is
     `verify`'s, a writer's fold's and a rebuild's to find.
   - A `lake_created` that says another format than the release's is
@@ -87,7 +90,11 @@ that restated it.
 The operator's green field of 2026-10-31 (098) ends this for formats
 before 23: an older format is refused, and nothing is upgraded. 115,
 accepted by the operator on 2026-11-11, ends it for 23 as well: 0.24.0
-reads and writes format 24 alone, and a host re-ingests.
+reads and writes format 24 alone, and a host re-ingests. The operator's
+decision of 2026-11-21 (lakelands#1824) reopens it for 23 alone: from
+0.25.x a lake of format 23 is read and carried up to 24 by a writer's
+open, as below, since format 24 only adds to 23 and every event 23 wrote
+folds as 24 folds it.
 
 How a lake the release before wrote becomes one the new release reads is
 then part of the change, and the suite proves it on a lake the release
@@ -226,6 +233,18 @@ reads log format 23; it is not damaged", exit 1 and write no log.
 Nothing is translated (115): a host keeps its format-23 lake with the
 0.23.x binary and brings its data into a new lake of 0.24.0.
 
+**0.25.x on a lake that 0.23.0 wrote** (lakelands#1824). It reads the
+lake: `verify`, `export`, a reader's open, `restore --check` and an
+import answer it as 0.23.0 did, every event keeping its `v`, its bytes
+and its hash. A writer's open carries it up: its `lease_taken` is written
+in format 24 onto the format-23 tip, and the lake is written in 24 from
+there; nothing else is appended and no projection is rebuilt, since 24
+folds every event of 23 as 23 did. The store answers the format it
+carried the lake up from at that open (`upgraded_at_open`, 23), so a
+host can say so; a second open finds a tip of 24 and answers none. A
+reader, an export and an import append nothing, so a lake only read
+stays in 23. Formats before 23 are refused as before.
+
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
 - **The log is never rewritten.** Each format step from 14 on ships a
@@ -246,14 +265,17 @@ Nothing is translated (115): a host keeps its format-23 lake with the
   (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
 - **A writer's open upgrades.** It appends, after its `lease_taken`, one
   `lake_upgraded` from the older format to the release's, and the lake
-  is written in the new one from there; a step that changes a fold also
+  is written in the new one from there (the carry from 23 to 24 has no
+  such kind, which would itself change the format: the `lease_taken`
+  written in 24 is the step, and `upgraded_at_open` reports it); a step that changes a fold also
   has the open rebuild the projection. `lakelands upgrade` is that open
   as a command, with `--check` to say what it would do. A read-only open
   of such a lake is refused, naming the way. An import of an older
   export upgrades the new lake the same way.
 - **A format changes only where a new writer upgrades it**, at its
   `lease_taken` followed by the `lake_upgraded`, and never falls; both
-  verifiers refuse any other change.
+  verifiers refuse an event in a format below one before it as
+  `format_falls`.
 - **There is no downgrade.** A backup taken before the upgrade is the
   way back.
 - **The proof on a lake the release before wrote**: through 0.22.0,
@@ -266,8 +288,10 @@ Nothing is translated (115): a host keeps its format-23 lake with the
   22 are history that no binary of this tree reads, neither their lakes
   nor their vectors are in the tree, and `scripts/gates/vectors-kept.sh`
   holds from format 23 on. `docs/log-format/lakes/23/`, the lake v0.23.0
-  made, is kept as its bytes and refused as `log_format` on every engine
-  from 0.24.0 on, which reads format 24 alone (115).
+  made, is kept as its bytes, refused as `log_format` on every engine by
+  0.24.0, which reads format 24 alone (115), and from 0.25.x read as
+  0.23.0 answered it and carried up by a writer's open on every engine
+  (lakelands#1824).
   `docs/log-format/lakes/24/`, the lake v0.24.0 made, is kept and read in
   its own format on every engine.
 
@@ -381,3 +405,7 @@ them.
   raises the oldest format read with it, so no format before 24 is read.
   `docs/log-format/lakes/23/` stays as its bytes, and every engine
   refuses it as `log_format`, as an older lake is refused.
+- Amended by the operator's decision of 2026-11-21 (lakelands#1824),
+  for 0.25.x: format 23 is read again and carried up to 24 by a writer's
+  open, reported by `upgraded_at_open`; formats never fall
+  (`format_falls`).

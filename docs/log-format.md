@@ -1135,9 +1135,10 @@ float, and so is a vector of zeros.
 
 ## 6. Versioning
 
-**A release writes one format version, and reads that one.** Format 23
-begins a new record: 0.23.0 starts with no past behind it, and no format
-before 23 is read, kept or converted
+**A release writes one format version, and reads that one and the
+formats from `OLDEST_LOG_FORMAT` up to it.** Format 23 begins a new
+record: 0.23.0 starts with no past behind it, and no format before 23 is
+read, kept or converted
 (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`). Every
 event carries the version it was written in as `v`, and
 `lake_created.format` says the version the lake was made in, the same as
@@ -1163,8 +1164,14 @@ newer, and never read in part.** A reader reads a line's `v` before
 any other member of it, a frame line's as an event's (§1.2); a line with
 no `v` is in format 0. (A verification of an export checks first that
 each line is canonical, and `v` next.) Nothing is translated: a lake of
-an older format is not upgraded, and its data comes in again by a new
-lake.
+a format the release does not read is not upgraded, and its data comes
+in again by a new lake. A lake of a format the release reads but does not write is read as
+it stands, each event keeping its `v`, its bytes and its hash, and a
+writer's open carries it up: the `lease_taken` it appends is written in
+the release's format, as every event after it is
+(`LakeStore::upgraded_at_open` names the format it was carried up from,
+for that open alone). A reader's open, an export and an import append
+nothing and carry nothing up.
 
 - An open of a lake whose three numbers do not contradict each other —
   its first event and its `lake_created` name one format, and its newest
@@ -1178,13 +1185,15 @@ lake.
   damage, refused before the lake is opened, at the event that carries
   the contradiction: a `lake_created` whose format is not its own line's
   `v` (`created_in_another`), and a newest event in a format below its
-  first's (`format_other`), since a release appends only onto a lake
-  whose first event it reads. Nothing of the lake is judged, made, folded
+  first's (`format_falls`), since a release appends only onto a lake
+  whose first event it reads, in a format not below it. Nothing of the lake is judged, made, folded
   or appended to; a backup is the remedy.
 - Wherever else an event is read (a verification of the lake or of an
   export, the feed, a rebuild, an import), one in a format the release
   does not read is refused at its position, naming both numbers
-  (`format_other`).
+  (`format_other`), and one in a format below an event's before it, which
+  no writer appends, at its position too (`format_falls`): a lake's
+  formats never fall.
 - A `lake_created` that says another format than its own line, or one
   the release does not read, is refused where it is read by a flaw of
   its own (`created_in_another`), at whatever position it stands; a
@@ -1196,12 +1205,15 @@ lake.
 **Format 24** adds the kind `values_erased` (§2.3) and closes
 `values_removed`'s selection to its four forms
 (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
-Nothing else changes. A lake of format 23 is refused as `log_format`,
-as a lake of any other format is; its data comes in again by a new lake.
+Nothing else changes, so an event of format 23 reads as format 24 reads
+it: format 23 wrote no `values_erased` and no `values_removed` of a
+`record` or a `quarantined` selection. A lake of format 23 is read, and
+carried up to 24 by a writer's open (lakelands#1824); a lake of a format
+before 23 is refused as `log_format`.
 
 **There is no downgrade.** A lake a release wrote is not opened by a
 release before it: an older release refuses it by the format on its
-first line. A backup is the way back.
+first line, or, for a lake carried up, on its newest. A backup is the way back.
 
 ## Appendix A. Encodings
 

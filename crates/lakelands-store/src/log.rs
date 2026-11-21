@@ -206,9 +206,14 @@ pub(crate) fn unsealed(
 /// ([`EngineOpener::log_ends`](lakelands_api::engine::EngineOpener::log_ends)),
 /// read here as the open reads a line of a format it does not run; the
 /// judgement itself, shared with the verifier of an archive, is core's.
-pub fn one_format(lake: &LakeId, ends: Option<&(CanonicalEvent, CanonicalEvent)>) -> Result<()> {
+/// Answers the format the last event is written in, where the log holds
+/// one: a writer's open of an older one carries the lake up.
+pub fn one_format(
+    lake: &LakeId,
+    ends: Option<&(CanonicalEvent, CanonicalEvent)>,
+) -> Result<Option<u64>> {
     let Some((first, tip)) = ends else {
-        return Ok(());
+        return Ok(None);
     };
     let at = (first.position, tip.position);
     // Every line holds its `v`; a `lake_created` may leave members to its
@@ -221,7 +226,8 @@ pub fn one_format(lake: &LakeId, ends: Option<&(CanonicalEvent, CanonicalEvent)>
             .or_else(line)
     };
     let (first, tip) = (read(first), read(tip));
-    lakelands_core::log::one_format(lake.as_str(), at, first.as_ref(), tip.as_ref())
+    lakelands_core::log::one_format(lake.as_str(), at, first.as_ref(), tip.as_ref())?;
+    Ok(tip.and_then(|t| t.get("v").and_then(serde_json::Value::as_u64)))
 }
 
 fn corrupt(position: Position, flaw: Flaw) -> Error {

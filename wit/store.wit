@@ -36,6 +36,9 @@ interface store {
         /// Why the writer's open rebuilt the projection, where it did: an
         /// older build laid it out.
         rebuilt-at-open: func() -> option<string>;
+        /// The log format the writer's open carried the lake up from,
+        /// where it did: an older release wrote its last event.
+        upgraded-at-open: func() -> option<u32>;
         limits: func() -> limits;
         /// The lake's last position.
         head: func() -> result<position, error>;

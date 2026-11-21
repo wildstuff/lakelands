@@ -353,6 +353,9 @@ pub struct Lake {
     /// Why the writer's open rebuilt the projection: an older build laid
     /// it out (lakelands#1151).
     rebuilt_at_open: Option<String>,
+    /// The format the writer's open carried the lake up from, where it did
+    /// (lakelands#1824).
+    upgraded_at_open: Option<u32>,
 }
 
 /// The holder a lease this process takes names: the process.
@@ -1577,6 +1580,11 @@ impl Lake {
     /// Why the writer's open rebuilt the projection, where it did.
     pub fn rebuilt_at_open(&self) -> Option<String> {
         self.rebuilt_at_open.clone()
+    }
+
+    /// The format the writer's open carried the lake up from, where it did.
+    pub fn upgraded_at_open(&self) -> Option<u32> {
+        self.upgraded_at_open
     }
 
     /// The last position folded into the projection, as this handle last

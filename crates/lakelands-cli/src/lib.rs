@@ -137,6 +137,14 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
         if let Some(why) = store.rebuilt_at_open() {
             eprintln!("lakelands: the projection was rebuilt from the log at this open: {why}");
         }
+        // A lake an older release wrote was carried up to this release's
+        // format by this open (lakelands#1824).
+        if let Some(from) = store.upgraded_at_open() {
+            let to = lakelands_api::event::LOG_FORMAT_VERSION;
+            eprintln!(
+                "lakelands: the lake was carried up from log format {from} to {to} at this open"
+            );
+        }
         // An owed reclaim kept no writer out; the host is told its cause
         // (lakelands#1161).
         if let Some(why) = store.reclaim_owed() {

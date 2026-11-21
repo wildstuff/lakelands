@@ -619,6 +619,15 @@ pub trait LakeStore: Send + Sync {
         None
     }
 
+    /// The log format the writer's open carried the lake up from, where it
+    /// did: an older release wrote its last event, and the open's
+    /// `lease_taken` is the lake's first event of this release's format.
+    /// The events before it are kept as they were written
+    /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+    fn upgraded_at_open(&self) -> Option<u32> {
+        None
+    }
+
     /// Withhold a record from principals without the `restricted` grant —
     /// a retention hold. The record and its history stay; reads by
     /// principals without the grant no longer see it. The reason is

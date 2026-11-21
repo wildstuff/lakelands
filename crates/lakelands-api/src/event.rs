@@ -20,15 +20,18 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 
 /// The log format version this release writes. Every event carries the
 /// version it was written in as `v`, and `lake_created.format` says the
-/// one the lake was made in. A lake in any other format is refused by name,
-/// with both numbers, and nothing of it is read (`docs/log-format.md` §6,
+/// one the lake was made in. A lake of a format before
+/// [`OLDEST_LOG_FORMAT`] or after this one is refused by name, with the
+/// numbers, and nothing of it is read (`docs/log-format.md` §6,
 /// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 pub const LOG_FORMAT_VERSION: u32 = 24;
 
-/// The oldest log format this release reads: 24, the format this store's
-/// promise of reading starts from
-/// (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`).
-pub const OLDEST_LOG_FORMAT: u32 = 24;
+/// The oldest log format this release reads: 23, whose events are format
+/// 24's without `values_erased` and without a `values_removed` of a
+/// `record` or a `quarantined` selection, so each reads as it was written.
+/// A writer's open of a lake of format 23 carries it up: its `lease_taken`
+/// is the lake's first event of format 24 (lakelands#1824).
+pub const OLDEST_LOG_FORMAT: u32 = 23;
 
 /// A SHA-256 digest, as 64 lower-case hexadecimal digits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

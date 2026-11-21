@@ -3,7 +3,9 @@
 **Accepted** by the operator on 2026-11-11, for 0.24.0, on epic
 lakelands#1642, with its step to format 24: a lake of format 23 is
 refused, nothing is translated, and a host brings its data in again by
-a new lake.
+a new lake. **Amended** by the operator on 2026-11-21 (lakelands#1824),
+for 0.25.x: a lake of format 23 is read and carried up to 24 by a
+writer's open (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 
 ## What is decided
 
@@ -122,7 +124,9 @@ record, by field, by quarantine id, and one that destroys a key and an
 apart key — and, at the 0.24.0 release, the lake that release makes
 through its doors under `docs/log-format/lakes/24/`, as each release
 keeps the lake of its format; the build itself adds none. No format before
-24 is read (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`).
+24 is read (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`);
+from 0.25.x `OLDEST_LOG_FORMAT` is 23 again, and a format-23 lake is
+carried up (lakelands#1824).
 
 ### A close may erase in the same append
 
@@ -383,3 +387,5 @@ its "not an erasure".
 
 Accepted by the operator on 2026-11-11 for 0.24.0 (lakelands#1642): the
 step to 24 refuses format 23 rather than reading it, and hosts re-ingest.
+Amended on 2026-11-21 (lakelands#1824): from 0.25.x format 23 is read
+and carried up, so a host keeps its lake.

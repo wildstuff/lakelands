@@ -1,8 +1,7 @@
-//! The kept lakes (record 054): the lake v0.24.0 made through its doors (`docs/log-format/lakes/24/`), imported as an export and read on every engine, and the lake v0.23.0 made (`docs/log-format/lakes/23/`), kept as bytes and refused on every engine: no format before 24 is read (record 115).
+//! The kept lakes (record 054): the lake v0.24.0 made through its doors (`docs/log-format/lakes/24/`) and the lake v0.23.0 made (`docs/log-format/lakes/23/`), each imported as an export and read on every engine; the lake of format 23 is carried up to format 24 by the writer's open that appends its first event of format 24 (lakelands#1824).
 use crate::conformance::ImportedLake;
 use crate::conformance::fixture::{doors, get_at, owner};
 use crate::conformance::prelude::*;
-use crate::export;
 
 check!(
     LAKE_24_READ = the_lake_of_format_24_is_read_as_it_answered,
@@ -31,7 +30,7 @@ fn no<T: std::fmt::Display>(e: T) -> Failure {
     Failure::new(format!("reading the lake: {e}"))
 }
 
-/// Where, `then`, the lake answers otherwise than `answers` keeps, part by part: with `log`, its head and every event's position and kind too (an import appends nothing, a writer's open its `lease_taken`), and always a record as a type name, a key, its fields and its stranded mark, and each `erasable` record named with its fields and provenance.
+/// Where, `then`, the lake answers otherwise than `answers` keeps, part by part: with `log`, its head and every event's position and kind too (an import appends nothing, a writer's open its `lease_taken`), and always a record as a type name, a key, its fields and its stranded mark (with, in a lake v0.23.0 made, whether a copy is named as its `cut`), and each `erasable` record named with its fields and provenance.
 async fn answered(store: &dyn LakeStore, kept: &Value, then: &str, log: bool) -> Held {
     let (own, cat) = (owner(store), doors(store));
     let head = store.head().await.must("reading the head")?;
@@ -42,7 +41,18 @@ async fn answered(store: &dyn LakeStore, kept: &Value, then: &str, log: bool) ->
     let (mut records, mut erasable) = (Vec::new(), Vec::new());
     for ty in kept["types"].as_array().into_iter().flatten() {
         for r in all(cat.as_ref(), &own, ty.as_str().unwrap_or("")).await? {
-            records.push(json!([ty, r.key, r.fields, r.stranded]));
+            // A lake of format 23 kept a stranded group's `cut` as a copy
+            // named, not which copy it is.
+            match kept["made_by"] == "v0.23.0" {
+                true => records.push(json!([
+                    ty,
+                    r.key,
+                    r.fields,
+                    r.stranded,
+                    r.cut.is_some_and(|c| !c.is_empty())
+                ])),
+                false => records.push(json!([ty, r.key, r.fields, r.stranded])),
+            }
         }
     }
     for said in kept["erasable"].as_array().into_iter().flatten() {
@@ -57,44 +67,60 @@ async fn answered(store: &dyn LakeStore, kept: &Value, then: &str, log: bool) ->
         ensure!(
             kept[part] == now[part],
             "{then} {part}: {}",
-            json!({"now": now[part], "v0.24.0": kept[part]})
+            json!({"now": now[part], "kept": kept[part]})
         );
     }
     Ok(())
 }
 
 check!(
-    LAKE_23_REFUSED = the_lake_of_format_23_is_refused,
-    "054, 115: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, kept as its bytes, is refused by a verifier of its export and by an import on this engine as `log_format`, naming the lake, format 23 and the one format this release reads and writes; nothing of it is read and nothing upgraded",
+    LAKE_23_READ = the_lake_of_format_23_is_read_and_carried_up,
+    "054, 115: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: its head and the position and kind of every event, every live record of each type it names with its fields, its stranded mark and its cut named, and a person a removal left holding a source's value with another's erased, with its provenance; a writer's open carries it up to format 24 and says it carried it up from 23: the `lease_taken` it appends is the lake's first event of format 24, every event before it keeps format 23, and the lake verifies; a second writer's open carries nothing up; and a rebuild of its log answers its records so again",
     given
 );
 
-async fn the_lake_of_format_23_is_refused(_store: Store, given: Given) -> Held {
+async fn the_lake_of_format_23_is_read_and_carried_up(_store: Store, given: Given) -> Held {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/23");
-    let reads = u64::from(lakelands_api::event::LOG_FORMAT_VERSION);
+    let said = std::fs::read(dir.join("answers.json")).map_err(no)?;
+    let answers: Value = serde_json::from_slice(&said).map_err(no)?;
     let lake = lakelands_api::LakeId::from("kept23");
     let keys = super::erasable::Keys::from_file(&dir.join("keys/kept23.keys.json"), &lake)?;
     let seams = super::erasable::with(&std::sync::Arc::new(keys));
-    let verified = export::verify(&dir).err();
-    let imported = (given.import)(dir, lake, None, seams).await.err();
-    for (door, e) in [("a verifier", verified), ("an import", imported)] {
-        // A refusal that is not of the format is the call's own failure.
-        if let Some(e) = e
-            .as_ref()
-            .filter(|e| !matches!(e.situation(), Some(Situation::LogFormat { .. })))
-        {
-            ensure!(
-                !matches!(e, Error::Unavailable { .. }),
-                "{door} was unavailable: {e}"
-            );
-        }
-        ensure!(
-            matches!(e.as_ref().and_then(Error::situation),
-                Some(Situation::LogFormat { lake: l, found: 23, reads: r, oldest })
-                    if l == "kept23" && *r == reads && *oldest == Some(reads)),
-            "{door} of the lake of format 23 refuses it as `log_format`, naming `kept23`, \
-             format 23 and {reads}; it answered {e:?}"
-        );
-    }
+    let imported = (given.import)(dir, lake, None, seams.clone()).await;
+    let ImportedLake { store, writer, .. } = imported.map_err(no)?;
+    store.verify(None, None).await.must("verifying the lake")?;
+    answered(store.as_ref(), &answers, "imported", true).await?;
+    let store = writer.clone()(store, seams.clone()).await.map_err(no)?;
+    let (from, head) = (
+        store.upgraded_at_open(),
+        store.head().await.must("the head")?,
+    );
+    ensure!(
+        from == Some(23),
+        "the writer's open says it carried the lake up from {from:?}, not 23"
+    );
+    let formats: Vec<_> = log_events(store.as_ref())
+        .await?
+        .iter()
+        .map(|e| (e.v, e.body.kind()))
+        .collect();
+    let tip = formats.last().cloned();
+    ensure!(
+        tip == Some((24, "lease_taken"))
+            && formats[..formats.len() - 1].iter().all(|(v, _)| *v == 23),
+        "after the writer's open, through {head}, the log is of formats {formats:?}"
+    );
+    store
+        .verify(None, None)
+        .await
+        .must("verifying the lake carried up")?;
+    let store = writer(store, seams).await.map_err(no)?;
+    let again = store.upgraded_at_open();
+    ensure!(
+        again.is_none(),
+        "a second writer's open carried the lake up again, from {again:?}"
+    );
+    store.rebuild().await.must("rebuilding the lake")?;
+    answered(store.as_ref(), &answers, "rebuilt", false).await?;
     Ok(())
 }

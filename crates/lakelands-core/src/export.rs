@@ -528,6 +528,7 @@ struct Chain {
     prev: Digest,
     known_at: Option<lakelands_api::Timestamp>,
     fence: u64,
+    format: u32,
     sealed: Vec<(Position, Position, String)>,
 }
 
@@ -571,6 +572,13 @@ impl Chain {
             return damaged(at, Flaw::FenceBelow { fence, floor });
         }
         self.fence = event.fence;
+        // Formats never fall (log-format §6): a release appends in its
+        // own format onto a lake of the same or an older one.
+        if event.v < self.format {
+            let (v, floor) = (u64::from(event.v), u64::from(self.format));
+            return damaged(at, Flaw::FormatFalls { v, floor });
+        }
+        self.format = event.v;
         // `known_at` never goes back (log-format §1.3).
         if let Some(before) = self.known_at
             && event.known_at < before
@@ -766,6 +774,7 @@ pub fn verify_through(dir: &Path, through: Option<Position>) -> Result<Verificat
         prev: Digest::zero(),
         known_at: None,
         fence: 0,
+        format: 0,
         sealed: Vec::new(),
     };
     for (index, path) in files.iter().enumerate() {

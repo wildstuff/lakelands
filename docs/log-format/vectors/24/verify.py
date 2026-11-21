@@ -235,7 +235,7 @@ BREAKS = {
     "framed_twice": "which its frame holds",
     "frame_short": "of a frame's lines still to come",
     "not_a_frame": "a frame line holds `events` from 1",
-    "format_other": "is not the one format",
+    "frame_other": "is not the one format",
     "position": "is not the position after",
     "prev_hash": "does not name the hash of the event before it",
     "start_unheld": "a segment's first event line holds its `position` and its `prev`",
@@ -1040,7 +1040,7 @@ def stamp(n):
         entry["stored"] = [moved(json.loads(line)) for line in entry["stored"]]
         entry["after"] = entry["after"] and framed["after"]
         flaw = entry["refused"]["flaw"]
-        for name in ("reads", "v") if flaw["code"] == "format_other" else ():
+        for name in ("frame", "v") if flaw["code"] == "frame_other" else ():
             flaw[name] += n - FORMAT
     path.write_text(json.dumps(framed, indent=2, ensure_ascii=False) + "\n", "utf-8")
 

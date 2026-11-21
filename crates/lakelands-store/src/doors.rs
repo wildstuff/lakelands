@@ -1479,6 +1479,10 @@ impl LakeStore for Store {
         self.lake.rebuilt_at_open()
     }
 
+    fn upgraded_at_open(&self) -> Option<u32> {
+        self.lake.upgraded_at_open()
+    }
+
     async fn restrict(&self, ty: &TypeName, key: &RecordKey, reason: String) -> Result<Position> {
         let (ty, key) = (ty.clone(), key.clone());
         exec::write(&self.lake, move |t| {

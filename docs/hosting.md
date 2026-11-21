@@ -961,6 +961,16 @@ nothing of it is read, and no command translates it (`log_format` and
 `format_other` in `docs/refusals.md`; `docs/log-format.md` §6;
 `docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`). Profiles
 are made anew, and `lakelands upgrade` is gone.
+- **A lake of format 23 is carried up from 0.25.x** (lakelands#1824).
+  0.24.0 refused it; 0.25.x reads it as 0.23.0 answered it, and the
+  first writer's open writes its `lease_taken` in format 24, from which
+  the lake is written in 24. Nothing is rewritten and no projection is
+  rebuilt. The CLI says so (`the lake was carried up from log format 23
+  to 24 at this open`), and a host reads the format it was carried up
+  from at `LakeStore::upgraded_at_open` (`Some(23)` at that open, `None`
+  at every later one), to report the upgrade as its own event. A lake
+  only read, exported or imported is not carried up. The way back from
+  a carried-up lake is the backup taken before it.
 - **The way back is the release that wrote the lake.** A lake of format
   23 is refused by a release before it, by the format on its first line,
   and a lake of an older format stays what it was, for the release that

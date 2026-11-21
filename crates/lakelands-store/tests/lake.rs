@@ -938,9 +938,10 @@ async fn a_lake_of_another_format_is_refused_at_an_open_and_left_as_it_was() {
 
 /// A lake a release continued in an older format is damaged, not another
 /// release's: a release refuses a lake whose first event it does not
-/// read, so it never appends an older format onto a newer lake. The
-/// open, in every mode, refuses it as damage at the tip, naming that
-/// format and the one this release writes, and leaves the lake as it
+/// read, so it never appends an older format onto a newer lake, and a
+/// lake's formats never fall. The open, in every mode, refuses it as
+/// damage at the tip, naming that format and the one before it, though
+/// this release reads the older one, and leaves the lake as it
 /// was: its tip stands, its projection is where it was, and its lease is
 /// free (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 #[tokio::test(flavor = "multi_thread")]
@@ -964,9 +965,9 @@ async fn a_lake_continued_in_an_older_format_is_damaged_at_the_tip_and_left_as_i
         assert!(
             matches!(e.situation(), Some(Situation::Damaged {
                 position: Some(p),
-                flaw: Flaw::FormatOther { v, reads: r },
+                flaw: Flaw::FormatFalls { v, floor },
                 ..
-            }) if *p == tip.0 && *v == u64::from(older) && *r == u64::from(reads)),
+            }) if *p == tip.0 && *v == u64::from(older) && *floor == u64::from(reads)),
             "{mode:?}: {e:?}"
         );
         assert_eq!(settled(&lake), before, "{mode:?} left the lake as it was");
@@ -1286,6 +1287,30 @@ async fn an_event_of_another_format_below_the_tip_is_refused_where_it_is_read() 
             r.err()
         );
     }
+}
+
+/// An event of a format this release reads, below an event of a newer
+/// one before it, is damage `verify` finds at its position: a lake's
+/// formats never fall, though both ends say the release's format
+/// (lakelands#1824).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_below_the_format_before_it_is_refused_by_verify() {
+    use lakelands_api::error::{Flaw, Situation};
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let older = lakelands_api::event::OLDEST_LOG_FORMAT;
+    assert!(older < reads, "this release reads an older format");
+    let (lake, (tip, _)) = lake_continued_in(&[older, reads]).await;
+    let below = Position(tip.0 - 1);
+    let reader = open(&lake, OpenMode::Read).await.unwrap();
+    let r = reader.verify(None, None).await;
+    assert!(
+        matches!(&r, Err(e) if matches!(e.situation(), Some(Situation::Damaged {
+            position: Some(p),
+            flaw: Flaw::FormatFalls { v, floor },
+            ..
+        }) if *p == below && *v == u64::from(older) && *floor == u64::from(reads))),
+        "{r:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
