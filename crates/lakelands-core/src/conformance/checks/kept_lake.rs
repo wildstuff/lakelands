@@ -135,11 +135,19 @@ async fn the_lake_of_format_23_is_read_and_carried_up(_store: Store, given: Give
 
 /// What the lake tells its owner it holds: every type with its doc and
 /// fields, its verbs, value types, functions, triggers, object sets and
-/// every setting with its value.
+/// every setting with its value. A series' `state` is left out: it says
+/// how far the projection has built the series' index, which an open goes
+/// on building, not what the lake holds.
 async fn described(store: &dyn LakeStore) -> std::result::Result<Value, Failure> {
     let (own, cat) = (owner(store), doors(store));
     let d = cat.describe(&own, Default::default()).await;
-    serde_json::to_value(d.must("describing the lake")?.data).map_err(no)
+    let mut d = serde_json::to_value(d.must("describing the lake")?.data).map_err(no)?;
+    for t in d["types"].as_array_mut().into_iter().flatten() {
+        for s in t["series"].as_array_mut().into_iter().flatten() {
+            s.as_object_mut().map(|s| s.remove("state"));
+        }
+    }
+    Ok(d)
 }
 
 /// Where the lake, `then`, describes itself otherwise than it did imported.
