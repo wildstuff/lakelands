@@ -163,7 +163,7 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.25.0`.** Lakelands `0.25.0` is the `lakelands` CLI, its
+> **Status: `0.25.1`.** Lakelands `0.25.1` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
 > conformance suite (1152 checks through the doors and 108 through the
@@ -181,6 +181,13 @@ terrain Lakelands is built for, and where it is not the right tool.
 > The log format stays 24: a lake of `0.24.0` is read as it was, and
 > nothing is ingested again. The lake `0.24.0` made through its doors
 > stays kept, never edited, under `docs/log-format/lakes/24/`.
+> **0.25.1 is a patch of `0.25.0`.** A reviewer judges a set of
+> declarations without writing it, at `Catalog::apply_dry_run` and
+> `POST …/schema/apply_dry_run`, refused whole with every problem named
+> and otherwise answered as the plan (lakelands#1819, an API and WIT
+> change a host makes); and `Catalog::accept_many` takes a declaration
+> bundle beside the upserts, retirements and calls it took, each entry
+> judged at the head its predecessors left (lakelands#1818).
 
 ## Try it
 
