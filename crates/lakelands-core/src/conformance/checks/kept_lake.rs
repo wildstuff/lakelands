@@ -39,11 +39,16 @@ async fn answered(store: &dyn LakeStore, kept: &Value, then: &str, log: bool) ->
         events.push(format!("{} {}", e.position, e.body.kind()));
     }
     let (mut records, mut erasable) = (Vec::new(), Vec::new());
+    let kept_records = kept["records"].as_array().into_iter().flatten();
+    let cut_named = kept_records
+        .filter_map(Value::as_array)
+        .any(|r| r.len() == 5);
     for ty in kept["types"].as_array().into_iter().flatten() {
         for r in all(cat.as_ref(), &own, ty.as_str().unwrap_or("")).await? {
             // A lake of format 23 kept a stranded group's `cut` as a copy
-            // named, not which copy it is.
-            match kept["made_by"] == "v0.23.0" {
+            // named, not which copy it is: its answers hold that as a
+            // record's fifth part.
+            match cut_named {
                 true => records.push(json!([
                     ty,
                     r.key,
@@ -75,7 +80,7 @@ async fn answered(store: &dyn LakeStore, kept: &Value, then: &str, log: bool) ->
 
 check!(
     LAKE_23_READ = the_lake_of_format_23_is_read_and_carried_up,
-    "054, 115: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: its head and the position and kind of every event, every live record of each type it names with its fields, its stranded mark and its cut named, and a person a removal left holding a source's value with another's erased, with its provenance; a writer's open carries it up to format 24 and says it carried it up from 23: the `lease_taken` it appends is the lake's first event of format 24, every event before it keeps format 23, and the lake verifies; a second writer's open carries nothing up; and a rebuild of its log answers its records so again",
+    "054, 115: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: its head and the position and kind of every event, every live record of each type it names with its fields, its stranded mark and its cut named, and a person a removal left holding a source's value with another's erased, with its provenance; a writer's open carries it up to format 24 and says it carried it up from 23: the `lease_taken` it appends is the lake's first event of format 24, every event before it keeps format 23, the lake verifies, and it describes itself to its owner as it did imported, every type with its doc and fields, every declaration and every setting with its value; a second writer's open carries nothing up; and a rebuild of its log answers its records and describes the lake so again",
     given
 );
 
@@ -90,6 +95,7 @@ async fn the_lake_of_format_23_is_read_and_carried_up(_store: Store, given: Give
     let ImportedLake { store, writer, .. } = imported.map_err(no)?;
     store.verify(None, None).await.must("verifying the lake")?;
     answered(store.as_ref(), &answers, "imported", true).await?;
+    let before = described(store.as_ref()).await?;
     let store = writer.clone()(store, seams.clone()).await.map_err(no)?;
     let (from, head) = (
         store.upgraded_at_open(),
@@ -114,6 +120,7 @@ async fn the_lake_of_format_23_is_read_and_carried_up(_store: Store, given: Give
         .verify(None, None)
         .await
         .must("verifying the lake carried up")?;
+    same(&before, described(store.as_ref()).await?, "carried up")?;
     let store = writer(store, seams).await.map_err(no)?;
     let again = store.upgraded_at_open();
     ensure!(
@@ -122,5 +129,25 @@ async fn the_lake_of_format_23_is_read_and_carried_up(_store: Store, given: Give
     );
     store.rebuild().await.must("rebuilding the lake")?;
     answered(store.as_ref(), &answers, "rebuilt", false).await?;
+    same(&before, described(store.as_ref()).await?, "rebuilt")?;
+    Ok(())
+}
+
+/// What the lake tells its owner it holds: every type with its doc and
+/// fields, its verbs, value types, functions, triggers, object sets and
+/// every setting with its value.
+async fn described(store: &dyn LakeStore) -> std::result::Result<Value, Failure> {
+    let (own, cat) = (owner(store), doors(store));
+    let d = cat.describe(&own, Default::default()).await;
+    serde_json::to_value(d.must("describing the lake")?.data).map_err(no)
+}
+
+/// Where the lake, `then`, describes itself otherwise than it did imported.
+fn same(before: &Value, now: Value, then: &str) -> Held {
+    ensure!(
+        *before == now,
+        "{then}, the lake describes itself otherwise: {}",
+        json!({"now": now, "imported": before})
+    );
     Ok(())
 }

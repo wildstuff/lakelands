@@ -961,8 +961,8 @@ nothing of it is read, and no command translates it (`log_format` and
 `format_other` in `docs/refusals.md`; `docs/log-format.md` §6;
 `docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`). Profiles
 are made anew, and `lakelands upgrade` is gone.
-- **A lake of format 23 is carried up from 0.25.x** (lakelands#1824).
-  0.24.0 refused it; 0.25.x reads it as 0.23.0 answered it, and the
+- **A lake of format 23 is carried up from 0.27.0** (lakelands#1824).
+  0.24.0 through 0.26.0 refused it; 0.27.0 reads it as 0.23.0 answered it, and the
   first writer's open writes its `lease_taken` in format 24, from which
   the lake is written in 24. Nothing is rewritten and no projection is
   rebuilt. The CLI says so (`the lake was carried up from log format 23

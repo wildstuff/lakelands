@@ -1213,6 +1213,7 @@ name = "lakelands-engine-pg"
 version = "0.26.0"
 dependencies = [
  "lakelands-api",
+ "lakelands-backings",
  "lakelands-core",
  "lakelands-store",
  "peak_alloc",

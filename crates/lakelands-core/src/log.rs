@@ -282,6 +282,8 @@ fn padded(b: &str) -> bool {
 /// rule for a log written by something else.
 #[doc(hidden)]
 pub fn misplaced(event: &Event) -> Option<Flaw> {
+    // INTERIM: lakelands#1827 — a body only format 24 has is not yet
+    // refused in an event of format 23.
     if event.context.cause.is_some() {
         return Some(Flaw::CauseInContext);
     }

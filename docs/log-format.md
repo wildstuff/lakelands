@@ -1186,14 +1186,19 @@ nothing and carry nothing up.
   the contradiction: a `lake_created` whose format is not its own line's
   `v` (`created_in_another`), and a newest event in a format below its
   first's (`format_falls`), since a release appends only onto a lake
-  whose first event it reads, in a format not below it. Nothing of the lake is judged, made, folded
-  or appended to; a backup is the remedy.
-- Wherever else an event is read (a verification of the lake or of an
-  export, the feed, a rebuild, an import), one in a format the release
+  whose first event it reads, in a format not below it. Nothing of the
+  lake is judged, made, folded or appended to; a backup is the remedy.
+- Wherever else a stored line is read (a verification of the lake or of
+  an export, the feed, a rebuild, an import), one in a format the release
   does not read is refused at its position, naming both numbers
-  (`format_other`), and one in a format below an event's before it, which
-  no writer appends, at its position too (`format_falls`): a lake's
-  formats never fall.
+  (`format_other`): the reader of a line judges its `v` first.
+- An event in a format below an event's before it, which no writer
+  appends, is refused at its position (`format_falls`) where the whole
+  log is walked in order: a verification of the lake, and a verification
+  of an export, which an import runs before it takes anything. The feed
+  and a rebuild read a log the open has judged by its ends and do not
+  judge the fall again; a fall between the ends is found by verifying the
+  lake. A lake's formats never fall.
 - A `lake_created` that says another format than its own line, or one
   the release does not read, is refused where it is read by a flaw of
   its own (`created_in_another`), at whatever position it stands; a

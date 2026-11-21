@@ -201,6 +201,8 @@ def restored(lines, need, before=None):
         # A line's format is read before anything else in it, a frame
         # line's as an event's: a line of another format is refused for
         # that, under a frame or not (log-format §1.2 and §6).
+        # INTERIM: lakelands#1826 — one format per archive, so the archive
+        # of a lake carried up from format 23 is refused here.
         need(read.get("v") == FORMAT, f"a line of format {read.get('v')} is not the one format, {FORMAT}")
         if "events" in read or "frame" in read:
             need(left == 0, "a frame line stands among the lines a frame covers")

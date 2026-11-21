@@ -90,9 +90,9 @@ that restated it.
 The operator's green field of 2026-10-31 (098) ends this for formats
 before 23: an older format is refused, and nothing is upgraded. 115,
 accepted by the operator on 2026-11-11, ends it for 23 as well: 0.24.0
-reads and writes format 24 alone, and a host re-ingests. The operator's
+through 0.26.0 read and write format 24 alone, and a host re-ingests. The operator's
 decision of 2026-11-21 (lakelands#1824) reopens it for 23 alone: from
-0.25.x a lake of format 23 is read and carried up to 24 by a writer's
+0.27.0 a lake of format 23 is read and carried up to 24 by a writer's
 open, as below, since format 24 only adds to 23 and every event 23 wrote
 folds as 24 folds it.
 
@@ -233,7 +233,7 @@ reads log format 23; it is not damaged", exit 1 and write no log.
 Nothing is translated (115): a host keeps its format-23 lake with the
 0.23.x binary and brings its data into a new lake of 0.24.0.
 
-**0.25.x on a lake that 0.23.0 wrote** (lakelands#1824). It reads the
+**0.27.0 on a lake that 0.23.0 wrote** (lakelands#1824). It reads the
 lake: `verify`, `export`, a reader's open, `restore --check` and an
 import answer it as 0.23.0 did, every event keeping its `v`, its bytes
 and its hash. A writer's open carries it up: its `lease_taken` is written
@@ -289,7 +289,7 @@ stays in 23. Formats before 23 are refused as before.
   nor their vectors are in the tree, and `scripts/gates/vectors-kept.sh`
   holds from format 23 on. `docs/log-format/lakes/23/`, the lake v0.23.0
   made, is kept as its bytes, refused as `log_format` on every engine by
-  0.24.0, which reads format 24 alone (115), and from 0.25.x read as
+  0.24.0 through 0.26.0, which read format 24 alone (115), and from 0.27.0 read as
   0.23.0 answered it and carried up by a writer's open on every engine
   (lakelands#1824).
   `docs/log-format/lakes/24/`, the lake v0.24.0 made, is kept and read in
@@ -406,6 +406,6 @@ them.
   `docs/log-format/lakes/23/` stays as its bytes, and every engine
   refuses it as `log_format`, as an older lake is refused.
 - Amended by the operator's decision of 2026-11-21 (lakelands#1824),
-  for 0.25.x: format 23 is read again and carried up to 24 by a writer's
+  for 0.27.0: format 23 is read again and carried up to 24 by a writer's
   open, reported by `upgraded_at_open`; formats never fall
   (`format_falls`).
