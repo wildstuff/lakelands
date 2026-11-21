@@ -50,13 +50,31 @@ refusal.
 
 ### What a list holds
 
-- An upsert, a retirement or a verb call. A declaration bundle, a
-  migration or any other proposed write is refused as the wrong door
-  and is accepted alone. Each of those changes what the next entry
-  would be judged against in ways a single accept already guards.
+- An upsert, a retirement or a verb call.
+- A declaration bundle, because a host's change folder files its
+  declarations as proposals and accepts the folder as one. Each is
+  judged at the head the entries before it in the list left,
+  declarations included: a bundle's declarations are applied to the
+  ontology the next entry is judged at, as the fold will apply them, so
+  a bundle that redeclares a type the list already declared differently
+  — or that was declared since the bundle was proposed — is refused as
+  invalid naming the type, as a lone accept of it after the earlier one
+  would be. A pinned write whose type an earlier entry redeclared is
+  refused as changed at its place: it was judged on a version the list
+  moved. The ontology advances through the list and is then put back
+  before the one append, so the declarations are folded once, in list
+  order.
 - A call of a verb whose effect is handed to an executor is refused as
-  the wrong door too. Its handoff answers for one acceptance, and a
-  list has no handoff of its own to carry it.
+  the wrong door. Its handoff answers for one acceptance, and a list
+  has no handoff of its own to carry it.
+- A migration — of a type or of a value type — is refused as the wrong
+  door. It rewrites the records under the type with its own event, and
+  a later entry of the list reads the records this batch began on, not
+  the ones the migration leaves: applied in a list it would be judged,
+  and judged others, on a lake no accept could have left. For the same
+  reason any other proposed write that decides over many records — a
+  `records` change, a computation — is refused as the wrong door and is
+  accepted alone.
 
 ## Why
 

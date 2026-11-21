@@ -3,6 +3,7 @@
 //! `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
 //! `docs/decisions/004-the-change-feed-is-the-log.md`).
 
+use lakelands_api::error::Naming;
 use lakelands_api::principal::WriteContext;
 
 use super::only::{alice, claim_with, claims, de, holder};
@@ -37,7 +38,7 @@ check!(
 
 check!(
     ACCEPT_MANY = several_proposals_are_accepted_as_one_or_none,
-    "117 (lakelands#1802): `accept_many` accepts a list of proposals in one append, all or none: each is judged as the ones before it in the list left the lake, so a pinned upsert a sibling earlier in the list wrote over is refused as changed, naming its place in the list and its id; so is a decided proposal or one listed twice, one whose record the asker may write only in part, and a write that is not an upsert, a retirement or a call; a principal without the review grant is refused before any entry; a refusal appends nothing and leaves every proposal of the list pending; a list accepted answers an outcome for each, in order, their events contiguous after the head"
+    "117 (lakelands#1802): `accept_many` accepts a list of proposals in one append, all or none: each is judged as the ones before it in the list left the lake, so a pinned upsert a sibling earlier in the list wrote over is refused as changed, naming its place in the list and its id; so is a decided proposal or one listed twice, one whose record the asker may write only in part, and a write that is not an upsert, a retirement, a call or a declaration bundle; a call handed to an executor and any other write — a migration of a type or of a value type included — is refused as the wrong door at its place, and a principal without the review grant is refused before any entry; a refusal appends nothing and leaves every proposal of the list pending; a list accepted answers an outcome for each, in order, their events contiguous after the head. A declaration bundle is judged at the head its predecessors left — a bundle redeclaring a type an earlier entry of the list declared differently is refused as invalid naming the type, and nothing of the first declaration is written, and a pinned write whose type an earlier entry redeclared is refused as changed at its place — and two declarations accepted together append each acceptance and its `declared`, in list order, leaving both types in force"
 );
 
 check!(
@@ -585,10 +586,45 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
     let pin_b = by(&clerk, on_j(json!({"paid_ref": "b"}))).await?;
     let whole = propose(on_j(json!({"paid_ref": "c"}))).await?;
     let away = propose(on_j(json!({"status": "sent"}))).await?;
-    let declares = json!({"write": "declare", "declarations": [{"declare": "type",
-        "name": "memo", "fields": [{"name": "t", "type": {"kind": "text"}}]}]});
-    let declares = propose(declares).await?;
-    let all = [&first, &second, &pin_a, &pin_b, &whole, &away, &declares];
+    let bundle = |name: &str, field: &str| {
+        json!({"write": "declare", "declarations": [{"declare": "type",
+            "name": name, "fields": [{"name": field, "type": {"kind": "text"}}]}]})
+    };
+    let (declares, declares_again) = (
+        propose(bundle("memo", "t")).await?,
+        propose(bundle("memo", "u")).await?,
+    );
+    // A migration of a type, and a bundle redeclaring one the list already
+    // holds differently: the redeclaration moves the version `pin_a` was
+    // judged on.
+    let wider = type_decl(
+        "invoice",
+        vec![
+            field("status", StorageKind::Text),
+            field("paid_ref", StorageKind::Text),
+            field("extra", StorageKind::Text),
+        ],
+    );
+    let migration = propose(json!({"write": "migrate", "migration": {"to": wider}})).await?;
+    let redeclare = propose(
+        json!({"write": "declare", "declarations": [{"declare": "type",
+        "name": "invoice", "fields": [{"name": "status", "type": {"kind": "text"}},
+        {"name": "paid_ref", "type": {"kind": "text"}},
+        {"name": "note", "type": {"kind": "text"}}]}]}),
+    )
+    .await?;
+    let all = [
+        &first,
+        &second,
+        &pin_a,
+        &pin_b,
+        &whole,
+        &away,
+        &declares,
+        &declares_again,
+        &migration,
+        &redeclare,
+    ];
     let (ty, key) = ("invoice".into(), Some("j".into()));
     let changed = Some(Error::invalid(Case::WriteChangedSinceProposed { ty, key }));
     let no = |reason| Some(Error::refused(None, reason));
@@ -596,13 +632,29 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
     // Each is refused at 1 as a lone accept of it would be; `None` is the
     // conflict of a pinned version that is no longer the record's.
     use Refusal::{Decided, NotGranted, WrongDoor};
+    let declared_since = Some(Error::invalid(Case::DeclaredSinceProposed {
+        what: Naming::Type,
+        name: "memo".into(),
+    }));
     for (who, list, want, why) in [
         (own, [f, s], None, "an upsert a sibling moved"),
         (own, [f, d], no(Decided), "a decided proposal"),
         (own, [f, f], no(Decided), "a proposal listed twice"),
-        (own, [&pin_a, &pin_b], changed, "a moved pin"),
+        (own, [&pin_a, &pin_b], changed.clone(), "a moved pin"),
+        (own, [f, &migration], no(WrongDoor), "a migration"),
+        (
+            own,
+            [&redeclare, &pin_a],
+            changed,
+            "a pinned proposal on a type a sibling redeclared",
+        ),
         (&narrow, [w, &away], no(NotGranted), "one listed in part"),
-        (own, [w, &declares], no(WrongDoor), "a declaration"),
+        (
+            own,
+            [&declares, &declares_again],
+            declared_since,
+            "a redeclared type",
+        ),
     ] {
         let list = list.map(Clone::clone);
         let before = store.head().await.must("reading the head")?;
@@ -624,6 +676,13 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
         let kept = all.iter().all(pending);
         ensure!(kept, "a refused list leaves its proposals pending ({why})");
     }
+    // The refused declaration bundle wrote none of its types: the first
+    // entry's `memo` is not in force either.
+    let described = l.describe().await?;
+    ensure!(
+        !described.types.iter().any(|t| t.name.as_str() == "memo"),
+        "a list refused at its second declaration writes nothing of the first"
+    );
     // Without `review` nothing of a list is decided, and no place named.
     let err = cat.accept_many(&clerk, std::slice::from_ref(&whole)).await;
     let err = err.must_fail("accepting without `review`")?;
@@ -669,6 +728,51 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
         matches!(&again, Error::Accepting { index: 0, error, .. }
             if matches!(**error, Error::Refused { reason: Refusal::Decided, .. })),
         "an accepted proposal listed again is refused as decided at 0; it failed with {again:?}"
+    );
+    // A declaration bundle accepted as one list: each declaration judged at
+    // the head the one before it left, and both in force after the append.
+    let (alpha, beta) = (
+        propose(bundle("alpha", "t")).await?,
+        propose(bundle("beta", "u")).await?,
+    );
+    let before = store.head().await.must("reading the head")?;
+    let accepted = cat.accept_many(own, &[alpha, beta]).await;
+    let accepted = accepted.must("accepting two declarations together")?;
+    let head = store.head().await.must("reading the head")?;
+    let logged = kinds_from(store.as_ref(), before.next()).await?;
+    let stands: Vec<_> = accepted
+        .iter()
+        .flat_map(|o| match o {
+            Outcome::Applied { declared, .. } => declared.as_slice(),
+            Outcome::Proposed { .. } => &[],
+        })
+        .map(|d| (d.name.as_str(), d.version, d.appended))
+        .collect();
+    let described = l.describe().await?;
+    let in_force = |ty: &str| described.types.iter().any(|t| t.name.as_str() == ty);
+    ensure!(
+        accepted.len() == 2
+            && accepted[0].position() < accepted[1].position()
+            && accepted[1].position() == head
+            && matches!(
+                logged.as_slice(),
+                [
+                    EventBody::WriteAccepted { .. },
+                    EventBody::Declared { .. },
+                    EventBody::WriteAccepted { .. },
+                    EventBody::Declared { .. },
+                ]
+            )
+            && stands == [("alpha", 1, true), ("beta", 1, true)]
+            && in_force("alpha")
+            && in_force("beta"),
+        "two declarations accepted together must each be judged at the head the one \
+         before it left, append its acceptance and its `declared`, in list order, and \
+         leave both types in force; it answered {accepted:?}, appended {:?}, declared \
+         {stands:?}, and the lake holds `alpha` {} and `beta` {}",
+        logged.iter().map(EventBody::kind).collect::<Vec<_>>(),
+        in_force("alpha"),
+        in_force("beta"),
     );
     Ok(())
 }

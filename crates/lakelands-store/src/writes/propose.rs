@@ -22,6 +22,19 @@ struct Batch {
     events: Vec<Event>,
     stored: Vec<CanonicalEvent>,
     lens: Vec<usize>,
+    /// What each entry's outcome says beyond its events, in list order.
+    extras: Vec<Extra>,
+}
+
+/// What an entry of a list is answered with besides its events, kept until
+/// the one append answers them (117): what a migration renamed, the plan's
+/// sections, and the declarations a bundle sent and where.
+#[derive(Default)]
+struct Extra {
+    renamed: Vec<(FieldName, FieldName)>,
+    sections: (Vec<MigrationReport>, Vec<ValueTypeReport>),
+    declared: Option<(Vec<Declaration>, Position)>,
+    schema: bool,
 }
 
 impl Call<'_> {
@@ -573,6 +586,10 @@ impl Call<'_> {
         granted(self.who.grants.review)?;
         let (mut w, mut b) = (self.writer()?, Batch::default());
         let w = &mut *w;
+        // The ontology the list began on: each entry advances it to the
+        // head it left for the entries after it, and it is put back here
+        // so the one append folds the declarations once, in order (117).
+        let began = w.ontology.clone();
         let decided = list.iter().enumerate().try_for_each(|(index, proposal)| {
             let again = !b.done.insert(proposal.clone());
             let refused = |e| {
@@ -594,18 +611,32 @@ impl Call<'_> {
         let Some(lease) = b.lease else {
             return Ok(Vec::new());
         };
+        w.ontology = began;
         let stamped = (lease, b.events, b.stored);
         let events = (self.lake).append_stamped(w, stamped, Reads::default())?;
         let mut from = 0;
-        let told = |n: &usize| {
+        let mut answered = Vec::with_capacity(b.lens.len());
+        for (n, x) in b.lens.iter().zip(&b.extras) {
             let e = &events[from..from + n];
             from += n;
             let (first, last) = (e[0].position, e[n - 1].position);
-            let outcome = self.answered(e, Vec::new());
-            let outcome = self.told_of(&w.ontology, e, outcome, Some(last))?;
-            Ok((outcome, first..=last))
-        };
-        b.lens.iter().map(told).collect()
+            let outcome = self.answered(e, x.renamed.clone());
+            let mut outcome = self.told_of(&w.ontology, e, outcome, Some(last))?;
+            // Each declaration of a bundle as it stands after the list, as
+            // `apply` answers it (027, extended).
+            if let Some((declarations, at)) = &x.declared {
+                outcome = with_declared(outcome, &w.ontology, declarations, *at);
+            }
+            if let (true, Outcome::Applied { plan, .. }) = (x.schema, &mut outcome) {
+                *plan = Some(Box::new(plan::plan_at(
+                    self.lake,
+                    last,
+                    x.sections.clone(),
+                )?));
+            }
+            answered.push((outcome, first..=last));
+        }
+        Ok(answered)
     }
 
     /// An accept, under the writer `w`: appended alone, or, with `batch`,
@@ -659,10 +690,18 @@ impl Call<'_> {
             };
             return Err(lakelands_core::damaged(Part::Projection, None, flaw));
         };
-        // A list takes what one append decides alone: records and the
-        // store's own verbs (117).
-        use ProposedWrite::{Call as Verb, Retire, Upsert};
-        if batch.is_some() && !matches!(write, Upsert { .. } | Retire { .. } | Verb { .. }) {
+        // A list takes what one append decides alone: records, the
+        // store's own verbs, and a bundle of declarations each entry is
+        // judged at the head the one before it left (117). A migration
+        // rewrites the records the batch's view does not carry, so it is
+        // taken alone, as a change of records is.
+        use ProposedWrite::{Call as Verb, Declare, Retire, Upsert};
+        if batch.is_some()
+            && !matches!(
+                write,
+                Upsert { .. } | Retire { .. } | Verb { .. } | Declare { .. }
+            )
+        {
             return Err(Error::refused(None, Refusal::WrongDoor));
         }
         granted(!write.is_schema() || self.who.grants.schema)?;
@@ -880,10 +919,17 @@ impl Call<'_> {
                 // shown to no one at the proposal; the bundle would take
                 // its place as its proposer's (lakelands#915).
                 let key = lakelands_core::engines::declaration_key;
-                let since = view.declarations()?;
+                // The writer's ontology holds what the lake holds after
+                // the proposal and what the entries before this one in the
+                // list laid: a state of this kind and name since the
+                // proposal was shown to no one at it (lakelands#915, 117).
+                let since = w.ontology.declared_and_withdrawn();
                 let since = |d: &Declaration| {
-                    let mut held = since.iter().filter(|x| x.since > p.position);
-                    !w.ontology.in_force(d) && held.any(|x| key(&x.declaration) == key(d))
+                    let held = since
+                        .iter()
+                        .filter(|x| x.since > p.position)
+                        .any(|x| key(&x.declaration) == key(d));
+                    !w.ontology.in_force(d) && held
                 };
                 if let Some(d) = declarations.iter().find(|d| since(d)) {
                     let (what, name) = naming(d);
@@ -1034,6 +1080,37 @@ impl Call<'_> {
             let last = events.last().expect("an accept writes its acceptance");
             w.staged = Some((last.position, last.hash.clone()));
             (b.lease, _) = (Some(lease), b.lens.push(events.len()));
+            // The head the next entry is judged at is this one's: what its
+            // events declare is applied to the writer's ontology as the
+            // fold applies it, at their own positions (117).
+            for e in &events {
+                let EventBody::Declared {
+                    declaration,
+                    version,
+                    schema_hash,
+                    ..
+                } = &e.body
+                else {
+                    continue;
+                };
+                w.ontology.put_at(
+                    declaration.clone(),
+                    *version,
+                    schema_hash.clone(),
+                    e.position,
+                );
+            }
+            b.extras.push(Extra {
+                renamed,
+                sections,
+                declared: match write {
+                    ProposedWrite::Declare { declarations, .. } => {
+                        Some((declarations.clone(), accepted_at))
+                    }
+                    _ => None,
+                },
+                schema: write.is_schema(),
+            });
             b.events.extend(events);
             b.stored.extend(stored);
             return Ok(None);
