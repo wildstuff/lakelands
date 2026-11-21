@@ -207,6 +207,7 @@ macro_rules! door_checks {
             per_field_meta_names_the_writer_and_the_position,
             apply_declares_a_set_in_one_append_with_forward_references,
             apply_refuses_the_whole_set_naming_every_problem,
+            apply_dry_run_answers_as_apply_and_appends_nothing,
             declare_refuses_a_reference_to_an_undeclared_type,
             a_relation_removed_retargeted_or_narrowed_or_a_type_turned_view_is_a_migration,
             a_reference_key_field_filled_from_the_key_must_name_a_live_record,
@@ -8046,6 +8047,89 @@ pub async fn apply_refuses_the_whole_set_naming_every_problem(store: Arc<dyn Lak
     assert!(
         d.types.iter().all(|t| t.name.as_str().starts_with("sys.")),
         "no type of the refused set is declared"
+    );
+}
+
+/// `apply_dry_run` answers what `apply` answers, its refusal of a bad set
+/// and of a caller without the right to declare, and the plan of a good
+/// one, and appends nothing: the ontology and the head stay as they were.
+pub async fn apply_dry_run_answers_as_apply_and_appends_nothing(store: Arc<dyn LakeStore>) {
+    let catalog = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let shown = || async {
+        let d = catalog.describe(&cast.owner, ReadAt::default()).await;
+        (d.unwrap().data, store.head().await.unwrap())
+    };
+    let before = shown().await;
+    let mut bad = fixture();
+    let ghost: Declaration = serde_json::from_value(json!({
+        "declare": "verb", "name": "haunt", "on": "ghost", "risk": "low",
+        "effect": "write", "set": []
+    }))
+    .unwrap();
+    bad.push(ghost);
+    bad.push(bad[0].clone());
+    let dry = catalog.apply_dry_run(&cast.owner, bad.clone()).await;
+    assert_eq!(shown().await, before, "a refused dry run appends nothing");
+    let applied = catalog.apply(&cast.owner, bad).await.unwrap_err();
+    assert_eq!(
+        dry.unwrap_err(),
+        applied,
+        "a bad set is refused as apply refuses it"
+    );
+    for who in [&cast.clerk, &cast.architect] {
+        let dry = catalog.apply_dry_run(who, fixture()).await.unwrap_err();
+        assert_eq!(shown().await, before, "{}: nothing is appended", who.id);
+        let applied = catalog.apply(who, fixture()).await.unwrap_err();
+        assert_eq!(dry, applied, "{}: refused as apply refuses it", who.id);
+    }
+    let plan = catalog.apply_dry_run(&cast.owner, fixture()).await.unwrap();
+    assert_eq!(plan.position, before.1, "the plan is the head's");
+    assert_eq!(shown().await, before, "an admitted dry run appends nothing");
+    catalog.apply(&cast.owner, fixture()).await.unwrap();
+    assert_ne!(
+        shown().await.1,
+        before.1,
+        "apply appends the set the dry run admitted"
+    );
+    // Judged as its author is shown the lake: `amount`, which it may not
+    // know of, answers as a field `invoice` does not have, as `apply`
+    // answers it, so the dry run tells it nothing more.
+    let grants = json!({"default": "write", "schema": true, "restricted": true,
+        "types": {INVOICE: {"fields": {"amount": "none"}}}});
+    let grants = serde_json::from_value(grants).unwrap();
+    let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
+    let before = shown().await;
+    let probe = |requires: &str| {
+        let v = json!({"declare": "verb", "name": "probe", "on": INVOICE, "risk": "low",
+            "requires": requires, "effect": "write",
+            "set": [{"field": "note", "value": "'y'"}]});
+        vec![serde_json::from_value::<Declaration>(v).unwrap()]
+    };
+    let dry = catalog.apply_dry_run(author, probe("amount > 3")).await;
+    assert_eq!(
+        shown().await,
+        before,
+        "a hidden field's dry run appends nothing"
+    );
+    let applied = catalog
+        .apply(author, probe("amount > 3"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        dry.unwrap_err(),
+        applied,
+        "a hidden field is refused as apply refuses it"
+    );
+    let ghost = catalog
+        .apply_dry_run(author, probe("amuont > 3"))
+        .await
+        .unwrap_err();
+    let ghost = format!("{ghost:?}").replace("amuont", "amount");
+    assert_eq!(
+        ghost,
+        format!("{applied:?}"),
+        "a hidden field answers as one never declared"
     );
 }
 

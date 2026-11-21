@@ -137,6 +137,9 @@ crate::tagged_enum! {
         /// `apply`: a set of declarations as one. Served over REST only, as
         /// `declare` is.
         Apply,
+        /// `apply_dry_run`: `apply` judged without its append. Served over
+        /// REST only, as `apply` is.
+        ApplyDryRun,
         /// `add_field`.
         AddField,
         /// `recompute`.

@@ -15,6 +15,9 @@ interface schema {
     describe-type: func(catalog: borrow<catalog>, who: principal, %type: type-name, at: read-at) -> result<type-description-reply, error>;
     declare: func(catalog: borrow<catalog>, who: principal, declaration: declaration) -> result<outcome, error>;
     apply: func(catalog: borrow<catalog>, who: principal, declarations: list<declaration>) -> result<outcome, error>;
+    /// `apply` judged without its append: the same refusal, or the plan at
+    /// the head. Nothing is written.
+    apply-dry-run: func(catalog: borrow<catalog>, who: principal, declarations: list<declaration>) -> result<plan-reply, error>;
     add-field: func(catalog: borrow<catalog>, who: principal, %type: type-name, field: field-decl) -> result<outcome, error>;
     /// Compute again what a declaration in force computes.
     recompute: func(catalog: borrow<catalog>, who: principal, what: recomputed) -> result<outcome, error>;

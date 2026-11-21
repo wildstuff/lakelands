@@ -1224,6 +1224,15 @@ impl Catalog for Doors {
             .await
     }
 
+    async fn apply_dry_run(
+        &self,
+        who: &Principal,
+        declarations: Vec<Declaration>,
+    ) -> Result<Reply<Plan>> {
+        self.write(who, move |c| c.apply_dry_run(declarations))
+            .await
+    }
+
     async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
         self.write_settled(who, move |c| c.recompute(&what)).await
     }

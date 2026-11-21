@@ -443,6 +443,14 @@ impl Catalog for Doors {
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
         self.inner.apply(who, declarations).await
     }
+
+    async fn apply_dry_run(
+        &self,
+        who: &Principal,
+        declarations: Vec<Declaration>,
+    ) -> Result<Reply<lakelands_api::write::Plan>> {
+        self.inner.apply_dry_run(who, declarations).await
+    }
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         self.inner.add_field(who, ty, field).await
     }

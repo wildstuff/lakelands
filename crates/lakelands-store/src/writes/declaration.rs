@@ -94,6 +94,17 @@ impl Call<'_> {
         self.make(change, Against::default())
     }
 
+    /// `apply_dry_run`: `apply`'s gate, then its plan, which is its own
+    /// path up to the append (062), so the set is refused as `apply`
+    /// refuses it and nothing is appended.
+    pub fn apply_dry_run(
+        &self,
+        declarations: Vec<Declaration>,
+    ) -> Result<lakelands_api::read::Reply<lakelands_api::write::Plan>> {
+        self.enacting()?;
+        self.plan(lakelands_api::write::Change::Declare { declarations })
+    }
+
     /// A declaration reads only what its author may read (024 and 028,
     /// extended). The set is checked as sent against the ontology as its
     /// author is shown it, so a field the author may not know of answers as
