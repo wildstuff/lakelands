@@ -163,21 +163,20 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.25.0`.** Lakelands `0.25.0` is the `lakelands` CLI, its
+> **Status: `0.26.0`.** Lakelands `0.26.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
 > conformance suite (1152 checks through the doors and 108 through the
 > engine seam), with 115 decision records and the event log at format
 > version 24, installable from the release. Its budgets: see
 > `docs/budgets.md` for the ceilings and the ratchet bases.
-> Beside what `0.24.0` held (the numbers are issues), every reader of a
-> quarantined row is told the cause code of the host's refusal
-> (lakelands#1808); a principal asks a type's vector coverage and a
-> purge's report, and is answered only what it may see (lakelands#1810,
-> an API change a host makes); and a reviewer accepts several proposals
-> in one commit, all or none, at `Catalog::accept_many` and
-> `POST …/proposals/accept_many` (lakelands#1812, an API and WIT change
-> a host makes).
+> Beside what `0.25.0` held (the numbers are issues), a reviewer judges
+> a set of declarations without writing it, at `Catalog::apply_dry_run`
+> and `POST …/schema/apply_dry_run`, refused whole with every problem
+> named and otherwise answered as the plan (lakelands#1819, an API and
+> WIT change a host makes); and `Catalog::accept_many` takes a
+> declaration bundle beside the upserts, retirements and calls it took,
+> each entry judged at the head its predecessors left (lakelands#1818).
 > The log format stays 24: a lake of `0.24.0` is read as it was, and
 > nothing is ingested again. The lake `0.24.0` made through its doors
 > stays kept, never edited, under `docs/log-format/lakes/24/`.
@@ -304,7 +303,11 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones. `0.25.0` built what the status block above lists. `0.24.0`
+milestones. `0.26.0` built what the status block above lists. `0.25.0`
+built accepting several proposals in one commit, asking a type's vector
+coverage and a purge's report as a principal, and listing a host
+refusal's cause code to every reader of a quarantined row
+(lakelands#1808, lakelands#1810, lakelands#1812). `0.24.0`
 built log format 24, the erasure of a record's values, a judge, a field
 that belongs to a state move, a restore that stops at a position and a
 struct read from an object. `0.23.0` built series in a lake: a window's read, a view grouped by a bucket of
