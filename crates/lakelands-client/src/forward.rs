@@ -453,6 +453,14 @@ impl Catalog for ForwardingCatalog {
         forward!(self, c => c.apply(who, declarations); declarations)
     }
 
+    async fn apply_dry_run(
+        &self,
+        who: &Principal,
+        declarations: Vec<Declaration>,
+    ) -> Result<Reply<Plan>> {
+        forward!(self, c => c.apply_dry_run(who, declarations); declarations)
+    }
+
     async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
         forward!(self, c => c.recompute(who, what); what)
     }

@@ -682,6 +682,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Args,
             Writes::No,
         ),
+        (["schema", "apply_dry_run"], Method::POST) => r(
+            Door::ApplyDryRun,
+            "POST …/schema/apply_dry_run",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["schema", "add_field"], Method::POST) => r(
             Door::AddField,
             "POST …/schema/add_field",

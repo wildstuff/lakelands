@@ -812,7 +812,7 @@ pub(crate) async fn run(
             let d: D = args(label, &a)?;
             to_json(&c.declare(who, d.declaration).await?)
         }
-        Door::Apply => {
+        Door::Apply | Door::ApplyDryRun => {
             // No tool's schema checks these routes' members, so the
             // arguments refuse one they do not take.
             #[derive(Deserialize)]
@@ -821,7 +821,11 @@ pub(crate) async fn run(
                 declarations: Vec<Declaration>,
             }
             let d: D = args(label, &a)?;
-            to_json(&c.apply(who, d.declarations).await?)
+            if *door == Door::Apply {
+                to_json(&c.apply(who, d.declarations).await?)
+            } else {
+                to_json(&c.apply_dry_run(who, d.declarations).await?)
+            }
         }
         Door::Recompute => {
             #[derive(Deserialize)]

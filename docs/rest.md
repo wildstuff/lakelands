@@ -151,6 +151,7 @@ key may hold any character.
 | `POST …/schema/declare_type` | declare a type | body: `type` |
 | `POST …/schema/declare` | declare anything that does not reshape stored records | body: `declaration` |
 | `POST …/schema/apply` | declare a set together | body: `declarations` |
+| `POST …/schema/apply_dry_run` | judge a set as `…/schema/apply` would, changing nothing: its refusal, or its plan | body: `declarations` |
 | `POST …/schema/add_field` | add a field | body: `type`, `field` |
 | `POST …/schema/recompute` | compute again what a declaration in force computes | body: `function` or `type` |
 | `POST …/schema/migrate` | a migration's preflight | body: `to`, `renames` and `relation_renames`, or `value_type` |
@@ -249,11 +250,11 @@ value, `CALL`, `FOREACH` and a `RETURN` beside a write are
 record is read. The MCP `cypher` tool takes no write: it refuses one
 `cypher_tool_writes`, naming its clause.
 
-`schema/declare` and `schema/apply` are REST's alone: MCP offers
-`declare_type`, since an agent authors types, while a program may
-declare verbs, triggers, object sets and the rest. Each body member is
-the declaration as the contract writes it, and a member the route does
-not take is refused.
+`schema/declare`, `schema/apply` and `schema/apply_dry_run` are REST's
+alone: MCP offers `declare_type`, since an agent authors types, while a
+program may declare verbs, triggers, object sets and the rest. Each
+body member is the declaration as the contract writes it, and a member
+the route does not take is refused.
 
 `schema/plan` and `schema/enact` are REST's too; MCP's tools that change
 the ontology take `plan` and `plan_id` instead. A plan, and an answer

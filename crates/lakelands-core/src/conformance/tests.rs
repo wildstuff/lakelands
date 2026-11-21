@@ -15,7 +15,8 @@ use lakelands_api::ontology::FieldDecl;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams};
 use lakelands_api::write::{
-    Declaration, Migration, MigrationReport, Proposal, ProposalFilter, ProposedWrite,
+    Change, Declaration, Migration, MigrationReport, Plan, Proposal, ProposalFilter, ProposedWrite,
+    Recompute,
 };
 use lakelands_api::{
     Catalog, CommitStream, Error, Find, Found, Get, LakeId, LakeStore, Outcome, Patch, Position,
@@ -123,15 +124,12 @@ impl Catalog for DownCatalog {
     ) -> lakelands_api::quarantine::QuarantineClose);
     refuse!(declare<'life1>(who: &'life1 Principal, declaration: Declaration) -> Outcome);
     refuse!(apply<'life1>(who: &'life1 Principal, declarations: Vec<Declaration>) -> Outcome);
-    refuse!(recompute<'life1>(
-        who: &'life1 Principal, what: lakelands_api::write::Recompute
-    ) -> Outcome);
+    refuse!(apply_dry_run<'life1>(who: &'life1 Principal, set: Vec<Declaration>) -> Reply<Plan>);
+    refuse!(recompute<'life1>(who: &'life1 Principal, what: Recompute) -> Outcome);
     refuse!(add_field<'life1, 'life2>(
         who: &'life1 Principal, ty: &'life2 TypeName, field: FieldDecl
     ) -> Outcome);
-    refuse!(migrate<'life1>(
-        who: &'life1 Principal, migration: Migration
-    ) -> Reply<MigrationReport>);
+    refuse!(migrate<'life1>(who: &'life1 Principal, migration: Migration) -> Reply<MigrationReport>);
     refuse!(migrate_apply<'life1, 'life2>(
         who: &'life1 Principal, migration: Migration, report_id: &'life2 str
     ) -> Outcome);
@@ -144,11 +142,9 @@ impl Catalog for DownCatalog {
     refuse!(accept_planned<'life1, 'life2, 'life3>(
         who: &'life1 Principal, proposal: &'life2 ProposalId, plan_id: &'life3 str
     ) -> Outcome);
-    refuse!(plan<'life1>(
-        who: &'life1 Principal, change: lakelands_api::write::Change
-    ) -> Reply<lakelands_api::write::Plan>);
+    refuse!(plan<'life1>(who: &'life1 Principal, change: Change) -> Reply<Plan>);
     refuse!(enact<'life1, 'life2>(
-        who: &'life1 Principal, change: lakelands_api::write::Change, plan_id: &'life2 str
+        who: &'life1 Principal, change: Change, plan_id: &'life2 str
     ) -> Outcome);
     refuse!(ingest<'life1, 'life2>(
         who: &'life1 Principal, source: &'life2 SourceId, records: SourceStream

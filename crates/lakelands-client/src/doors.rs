@@ -500,6 +500,16 @@ impl Catalog for RemoteCatalog {
         self.go(who, call).await
     }
 
+    async fn apply_dry_run(
+        &self,
+        who: &Principal,
+        declarations: Vec<Declaration>,
+    ) -> Result<Reply<Plan>> {
+        let call = Call::new(Method::POST, "schema/apply_dry_run".into())
+            .json(&json!({ "declarations": declarations }));
+        self.go(who, call).await
+    }
+
     async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
         let call = Call::new(Method::POST, "schema/recompute".into()).json(&json!(what));
         self.go(who, call).await

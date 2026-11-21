@@ -270,6 +270,16 @@ pub trait Catalog: Send + Sync {
     /// Refused `grant_needed` to a caller without `restricted`.
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome>;
 
+    /// `apply` without its append: the set is judged as `apply` judges it,
+    /// on its path and as its caller is shown the lake, and refused as
+    /// `apply` would refuse it; admitted, it answers the plan `apply`'s
+    /// outcome would carry, at the head. Nothing is appended.
+    async fn apply_dry_run(
+        &self,
+        who: &Principal,
+        declarations: Vec<Declaration>,
+    ) -> Result<Reply<Plan>>;
+
     /// Compute again what a declaration in force computes: it is appended
     /// again as it stands, at its next version, and the fold does what it
     /// does at any `declared`: a function's fields are computed with the
