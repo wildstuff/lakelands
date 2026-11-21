@@ -105,12 +105,23 @@ pub(crate) fn others_shown(
 pub(crate) fn plan_of(
     lake: &Lake,
     w: &Writer,
+    sections: (Vec<MigrationReport>, Vec<ValueTypeReport>),
+) -> Result<Plan> {
+    plan_at(lake, head(w), sections)
+}
+
+/// [`plan_of`] at `at`: an entry of a list plans at the head it leaves,
+/// not at the list's, so each entry's plan names it as the single accept
+/// would (117).
+pub(crate) fn plan_at(
+    lake: &Lake,
+    at: Position,
     (types, value_types): (Vec<MigrationReport>, Vec<ValueTypeReport>),
 ) -> Result<Plan> {
     let lossless = types.iter().all(|t| t.lossless) && value_types.iter().all(|v| v.fits);
     let mut plan = Plan {
         report_id: String::new(),
-        at: (lake.report_head(Some(head(w)))?).unwrap_or(Position::GENESIS),
+        at: (lake.report_head(Some(at))?).unwrap_or(Position::GENESIS),
         types,
         value_types,
         lossless,
