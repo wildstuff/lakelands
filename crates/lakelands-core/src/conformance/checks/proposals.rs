@@ -38,7 +38,7 @@ check!(
 
 check!(
     ACCEPT_MANY = several_proposals_are_accepted_as_one_or_none,
-    "117 (lakelands#1802): `accept_many` accepts a list of proposals in one append, all or none: each is judged as the ones before it in the list left the lake, so a pinned upsert a sibling earlier in the list wrote over is refused as changed, naming its place in the list and its id; so is a decided proposal or one listed twice, one whose record the asker may write only in part, and a write that is not an upsert, a retirement, a call, a declaration bundle or a migration; a call handed to an executor and any other write is refused as the wrong door alone, and a principal without the review grant is refused before any entry; a refusal appends nothing and leaves every proposal of the list pending; a list accepted answers an outcome for each, in order, their events contiguous after the head. A declaration bundle is judged at the head its predecessors left — a bundle redeclaring a type an earlier entry of the list declared differently is refused as invalid naming the type, and nothing of the first declaration is written — and two declarations accepted together append each acceptance and its `declared`, in list order, leaving both types in force"
+    "117 (lakelands#1802): `accept_many` accepts a list of proposals in one append, all or none: each is judged as the ones before it in the list left the lake, so a pinned upsert a sibling earlier in the list wrote over is refused as changed, naming its place in the list and its id; so is a decided proposal or one listed twice, one whose record the asker may write only in part, and a write that is not an upsert, a retirement, a call or a declaration bundle; a call handed to an executor and any other write — a migration of a type or of a value type included — is refused as the wrong door at its place, and a principal without the review grant is refused before any entry; a refusal appends nothing and leaves every proposal of the list pending; a list accepted answers an outcome for each, in order, their events contiguous after the head. A declaration bundle is judged at the head its predecessors left — a bundle redeclaring a type an earlier entry of the list declared differently is refused as invalid naming the type, and nothing of the first declaration is written, and a pinned write whose type an earlier entry redeclared is refused as changed at its place — and two declarations accepted together append each acceptance and its `declared`, in list order, leaving both types in force"
 );
 
 check!(
@@ -594,6 +594,25 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
         propose(bundle("memo", "t")).await?,
         propose(bundle("memo", "u")).await?,
     );
+    // A migration of a type, and a bundle redeclaring one the list already
+    // holds differently: the redeclaration moves the version `pin_a` was
+    // judged on.
+    let wider = type_decl(
+        "invoice",
+        vec![
+            field("status", StorageKind::Text),
+            field("paid_ref", StorageKind::Text),
+            field("extra", StorageKind::Text),
+        ],
+    );
+    let migration = propose(json!({"write": "migrate", "migration": {"to": wider}})).await?;
+    let redeclare = propose(
+        json!({"write": "declare", "declarations": [{"declare": "type",
+        "name": "invoice", "fields": [{"name": "status", "type": {"kind": "text"}},
+        {"name": "paid_ref", "type": {"kind": "text"}},
+        {"name": "note", "type": {"kind": "text"}}]}]}),
+    )
+    .await?;
     let all = [
         &first,
         &second,
@@ -603,6 +622,8 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
         &away,
         &declares,
         &declares_again,
+        &migration,
+        &redeclare,
     ];
     let (ty, key) = ("invoice".into(), Some("j".into()));
     let changed = Some(Error::invalid(Case::WriteChangedSinceProposed { ty, key }));
@@ -610,7 +631,7 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
     let (f, s, d, w) = (&first, &second, &decided, &whole);
     // Each is refused at 1 as a lone accept of it would be; `None` is the
     // conflict of a pinned version that is no longer the record's.
-    use Refusal::{Decided, NotGranted};
+    use Refusal::{Decided, NotGranted, WrongDoor};
     let declared_since = Some(Error::invalid(Case::DeclaredSinceProposed {
         what: Naming::Type,
         name: "memo".into(),
@@ -619,7 +640,14 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
         (own, [f, s], None, "an upsert a sibling moved"),
         (own, [f, d], no(Decided), "a decided proposal"),
         (own, [f, f], no(Decided), "a proposal listed twice"),
-        (own, [&pin_a, &pin_b], changed, "a moved pin"),
+        (own, [&pin_a, &pin_b], changed.clone(), "a moved pin"),
+        (own, [f, &migration], no(WrongDoor), "a migration"),
+        (
+            own,
+            [&redeclare, &pin_a],
+            changed,
+            "a pinned proposal on a type a sibling redeclared",
+        ),
         (&narrow, [w, &away], no(NotGranted), "one listed in part"),
         (
             own,

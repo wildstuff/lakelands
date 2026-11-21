@@ -22,25 +22,19 @@ struct Batch {
     events: Vec<Event>,
     stored: Vec<CanonicalEvent>,
     lens: Vec<usize>,
-    /// The ontology the entries left, which each later entry is judged at,
-    /// and which the entries after it read as laid: the declarations they
-    /// made and where.
-    laid: Vec<(Position, Declaration)>,
     /// What each entry's outcome says beyond its events, in list order.
     extras: Vec<Extra>,
 }
 
 /// What an entry of a list is answered with besides its events, kept until
 /// the one append answers them (117): what a migration renamed, the plan's
-/// sections, the declarations a bundle sent and where, and the plans of a
-/// change of the ontology or of records.
+/// sections, and the declarations a bundle sent and where.
 #[derive(Default)]
 struct Extra {
     renamed: Vec<(FieldName, FieldName)>,
     sections: (Vec<MigrationReport>, Vec<ValueTypeReport>),
     declared: Option<(Vec<Declaration>, Position)>,
     schema: bool,
-    records: Option<lakelands_api::write::Plan>,
 }
 
 impl Call<'_> {
@@ -640,9 +634,6 @@ impl Call<'_> {
                     x.sections.clone(),
                 )?));
             }
-            if let (Some(p), Outcome::Applied { plan, .. }) = (&x.records, &mut outcome) {
-                *plan = Some(Box::new(p.clone()));
-            }
             answered.push((outcome, first..=last));
         }
         Ok(answered)
@@ -700,18 +691,15 @@ impl Call<'_> {
             return Err(lakelands_core::damaged(Part::Projection, None, flaw));
         };
         // A list takes what one append decides alone: records, the
-        // store's own verbs, and the changes of the ontology each entry is
-        // judged at the head the one before it left (117).
-        use ProposedWrite::{Call as Verb, Declare, Migrate, MigrateValueType, Retire, Upsert};
+        // store's own verbs, and a bundle of declarations each entry is
+        // judged at the head the one before it left (117). A migration
+        // rewrites the records the batch's view does not carry, so it is
+        // taken alone, as a change of records is.
+        use ProposedWrite::{Call as Verb, Declare, Retire, Upsert};
         if batch.is_some()
             && !matches!(
                 write,
-                Upsert { .. }
-                    | Retire { .. }
-                    | Verb { .. }
-                    | Declare { .. }
-                    | Migrate { .. }
-                    | MigrateValueType { .. }
+                Upsert { .. } | Retire { .. } | Verb { .. } | Declare { .. }
             )
         {
             return Err(Error::refused(None, Refusal::WrongDoor));
@@ -931,19 +919,17 @@ impl Call<'_> {
                 // shown to no one at the proposal; the bundle would take
                 // its place as its proposer's (lakelands#915).
                 let key = lakelands_core::engines::declaration_key;
-                let since = view.declarations()?;
-                // The declarations the entries before this one in the list
-                // laid stand after where it was proposed as well, and are
-                // held to it the same way (117).
-                let laid = batch.as_deref().map_or(&[][..], |b| b.laid.as_slice());
+                // The writer's ontology holds what the lake holds after
+                // the proposal and what the entries before this one in the
+                // list laid: a state of this kind and name since the
+                // proposal was shown to no one at it (lakelands#915, 117).
+                let since = w.ontology.declared_and_withdrawn();
                 let since = |d: &Declaration| {
-                    let mut held = since.iter().filter(|x| x.since > p.position);
-                    let held = held.any(|x| key(&x.declaration) == key(d));
-                    let laid = laid
+                    let held = since
                         .iter()
-                        .filter(|(at, _)| *at > p.position)
-                        .any(|(_, x)| key(x) == key(d));
-                    !w.ontology.in_force(d) && (held || laid)
+                        .filter(|x| x.since > p.position)
+                        .any(|x| key(&x.declaration) == key(d));
+                    !w.ontology.in_force(d) && held
                 };
                 if let Some(d) = declarations.iter().find(|d| since(d)) {
                     let (what, name) = naming(d);
@@ -1095,51 +1081,24 @@ impl Call<'_> {
             w.staged = Some((last.position, last.hash.clone()));
             (b.lease, _) = (Some(lease), b.lens.push(events.len()));
             // The head the next entry is judged at is this one's: what its
-            // events declare or migrate is applied to the writer's ontology
-            // as the fold applies it, at their own positions (117).
+            // events declare is applied to the writer's ontology as the
+            // fold applies it, at their own positions (117).
             for e in &events {
-                let laid = match &e.body {
-                    EventBody::Declared {
-                        declaration,
-                        version,
-                        schema_hash,
-                        ..
-                    } => {
-                        w.ontology.put_at(
-                            declaration.clone(),
-                            *version,
-                            schema_hash.clone(),
-                            e.position,
-                        );
-                        declaration.clone()
-                    }
-                    EventBody::Migrated {
-                        migration,
-                        schema_hash,
-                        version,
-                        ..
-                    } => {
-                        let decl = Declaration::Type(migration.to.clone());
-                        w.ontology.put_at(
-                            decl.clone(),
-                            *version,
-                            Some(schema_hash.clone()),
-                            e.position,
-                        );
-                        decl
-                    }
-                    EventBody::ValueTypeMigrated {
-                        declaration,
-                        version,
-                        ..
-                    } => {
-                        let decl = Declaration::ValueType(declaration.clone());
-                        w.ontology.put_at(decl.clone(), *version, None, e.position);
-                        decl
-                    }
-                    _ => continue,
+                let EventBody::Declared {
+                    declaration,
+                    version,
+                    schema_hash,
+                    ..
+                } = &e.body
+                else {
+                    continue;
                 };
-                b.laid.push((e.position, laid));
+                w.ontology.put_at(
+                    declaration.clone(),
+                    *version,
+                    schema_hash.clone(),
+                    e.position,
+                );
             }
             b.extras.push(Extra {
                 renamed,
@@ -1151,7 +1110,6 @@ impl Call<'_> {
                     _ => None,
                 },
                 schema: write.is_schema(),
-                records: records_plan,
             });
             b.events.extend(events);
             b.stored.extend(stored);
