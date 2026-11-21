@@ -281,12 +281,23 @@ async fn a_schema_0_23_0_left_is_carried_up_in_place_by_a_writers_open() {
             marked != 13,
             "marked: {marked}"
         );
-        let formats: Vec<_> = log_events(store.as_ref())
-            .await
-            .unwrap()
-            .iter()
-            .map(|e| (e.v, e.body.kind()))
-            .collect();
+        // While the open's rebuild folds, the feed leaves a reaction it
+        // cannot decide yet (the `trigger_fired` at 15) to a later poll:
+        // the log is followed until it reaches the head.
+        let head = store.head().await.unwrap();
+        let asked = std::time::Instant::now();
+        let log = loop {
+            let log = log_events(store.as_ref()).await.unwrap();
+            if log.last().is_some_and(|e| e.position == head) {
+                break log;
+            }
+            assert!(
+                asked.elapsed() < std::time::Duration::from_secs(60),
+                "marked: {marked}: the feed reaches {head} within a minute"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        let formats: Vec<_> = log.iter().map(|e| (e.v, e.body.kind())).collect();
         let (tip, below) = formats.split_last().unwrap();
         assert_eq!(*tip, (24, "lease_taken"), "marked: {marked}");
         assert!(below.iter().all(|(v, _)| *v == 23), "{formats:?}");
