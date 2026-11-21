@@ -252,18 +252,27 @@ async fn a_schema_0_23_0_left_is_carried_up_in_place_by_a_writers_open() {
         lakelands_store::import(location.clone(), seams.clone(), kept.clone())
             .await
             .unwrap();
-        let tables =
-            |url: &str| -> Vec<String> { held(url, &schema).into_iter().map(|t| t.0).collect() };
+        // The blocking client runs where the runtime lets a worker block.
+        use tokio::task::block_in_place as sync;
+        let tables = |url: &str| -> Vec<String> {
+            sync(|| held(url, &schema).into_iter().map(|t| t.0).collect())
+        };
         let before = tables(&url);
-        let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
         let mark = format!("SELECT n FROM \"{schema}\".meta WHERE k = 'layout'");
-        let layout: Option<i64> = db.query_one(&mark, &[]).unwrap().get(0);
-        assert_eq!(layout, Some(13), "0.23.0 marked its layout 13");
+        let layout = |url: &str| -> Option<i64> {
+            sync(|| {
+                let mut db = postgres::Client::connect(url, postgres::NoTls).unwrap();
+                db.query_one(&mark, &[]).unwrap().get(0)
+            })
+        };
+        assert_eq!(layout(&url), Some(13), "0.23.0 marked its layout 13");
         if marked != 13 {
             let older = format!("UPDATE \"{schema}\".meta SET n = {marked} WHERE k = 'layout'");
-            assert_eq!(db.execute(&older, &[]).unwrap(), 1);
+            sync(|| {
+                let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+                assert_eq!(db.execute(&older, &[]).unwrap(), 1);
+            });
         }
-        drop(db);
         let store = lakelands_store::open(location.clone(), seams.clone(), OpenMode::Write);
         let store = store.await.unwrap();
         assert_eq!(store.upgraded_at_open(), Some(23), "marked: {marked}");
@@ -285,17 +294,14 @@ async fn a_schema_0_23_0_left_is_carried_up_in_place_by_a_writers_open() {
         store.close().await.unwrap();
         drop(store);
         assert_eq!(tables(&url), before, "the open changed the schema's tables");
-        let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        let layout: Option<i64> = db.query_one(&mark, &[]).unwrap().get(0);
-        assert_eq!(layout, Some(13), "marked: {marked}");
-        drop(db);
+        assert_eq!(layout(&url), Some(13), "marked: {marked}");
         let again = lakelands_store::open(location.clone(), seams, OpenMode::Write);
         let again = again.await.unwrap();
         assert_eq!(again.upgraded_at_open(), None, "carried up twice");
         assert_eq!(again.rebuilt_at_open(), None, "rebuilt twice");
         again.close().await.unwrap();
         drop(again);
-        common::drop_schema(&url, &schema);
+        sync(|| common::drop_schema(&url, &schema));
         let _ = std::fs::remove_dir_all(&ring);
     }
 }
