@@ -871,6 +871,7 @@ pub const ALL: &[Check] = &[
     erase::ERASE_VERIFIES,
     erase::ERASE_SOURCES,
     erase::ERASE_NOT_AS_REMOVED,
+    erase::ERASE_IN_OLDEST_FORMAT,
     erase::ERASE_FOLLOWS_REKEY,
     erase::ERASE_TAKEN_KEY,
     erase::ERASE_NOT_SYS,

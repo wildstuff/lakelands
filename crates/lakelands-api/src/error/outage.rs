@@ -792,6 +792,8 @@ catalog! {
         FenceBelow { fence: u64, floor: u64 } => "it carries fence {fence}, below the fence {floor} of the event before it: fences never fall",
         /// Its log format is below the format of an event before it.
         FormatFalls { v: u64, floor: u64 } => "it is written in log format {v}, below the format {floor} of an event before it: a lake's formats never fall",
+        /// A body only a later log format has, written in an event of an earlier one.
+        KindSince { kind: String, v: u32, since: u32 } => "it is a `{kind}` event, which only log format {since} has, and it is written in log format {v}: no release wrote it",
         /// `context` carries `cause`, which the envelope carries.
         CauseInContext => "`context` carries `cause`, which the envelope carries",
         /// `context` carries `on_behalf_of`, which the envelope carries.

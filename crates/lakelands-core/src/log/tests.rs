@@ -111,6 +111,37 @@ fn a_lake_created_says_its_own_line_s_format() {
     }
 }
 
+/// A body only format 24 has — a `values_erased`, or a `values_removed` of a
+/// record or a quarantined row — is refused in an event of format 23
+/// (`OLDEST_LOG_FORMAT`'s doc, lakelands#1827).
+#[test]
+fn a_body_of_a_later_format_is_refused_in_an_earlier_one() {
+    let (oldest, written) = (OLDEST_LOG_FORMAT, LOG_FORMAT_VERSION);
+    let record = json!({"record": {"type": "visit", "key": "v1"}});
+    let quarantined = json!({"quarantined": {"source": "tracker", "delivery": "d0", "index": 0}});
+    let erased = json!({"kind": "values_erased", "selection": record});
+    let removed = |selection: serde_json::Value| json!({"kind": "values_removed", "source": "tracker", "selection": selection});
+    for (kind, body) in [
+        ("values_erased", erased.clone()),
+        ("values_removed", removed(record)),
+        ("values_removed", removed(quarantined)),
+    ] {
+        match misplaced(&in_format(oldest, body)) {
+            Some(Flaw::KindSince {
+                kind: said,
+                v,
+                since,
+            }) => {
+                assert_eq!((said.as_str(), v, since), (kind, oldest, ERASURE_SINCE));
+            }
+            other => panic!("a `{kind}` in format {oldest} is refused; it answered {other:?}"),
+        }
+    }
+    assert_eq!(misplaced(&in_format(written, erased)), None);
+    let by_source = removed(json!({"written_before": "2026-01-01T00:00:00.000000Z"}));
+    assert_eq!(misplaced(&in_format(oldest, by_source)), None);
+}
+
 #[test]
 fn a_box_belongs_to_a_record_ingested() {
     let line = |body: serde_json::Value| -> Event {

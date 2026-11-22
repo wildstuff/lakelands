@@ -1108,6 +1108,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `created_in_another` | `format` (u64), `reads` (u64) | its `lake_created` says log format {format}, another than its own line's or one this release does not read; it writes format {reads} | Its `lake_created` says another log format than its own line, or one the release does not read. |
 | `fence_below` | `fence` (u64), `floor` (u64) | it carries fence {fence}, below the fence {floor} of the event before it: fences never fall | Its fence is below the fence of the event before it. |
 | `format_falls` | `v` (u64), `floor` (u64) | it is written in log format {v}, below the format {floor} of an event before it: a lake's formats never fall | Its log format is below the format of an event before it. |
+| `kind_since` | `kind` (String), `v` (u32), `since` (u32) | it is a `{kind}` event, which only log format {since} has, and it is written in log format {v}: no release wrote it | A body only a later log format has, written in an event of an earlier one. |
 | `cause_in_context` | — | `context` carries `cause`, which the envelope carries | `context` carries `cause`, which the envelope carries. |
 | `on_behalf_of_in_context` | — | `context` carries `on_behalf_of`, which the envelope carries | `context` carries `on_behalf_of`, which the envelope carries. |
 | `initial_origin` | — | the envelope carries the origin `initial`, a field's alone | The envelope carries the origin `initial`, a field's alone. |

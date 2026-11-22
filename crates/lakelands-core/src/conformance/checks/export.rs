@@ -707,7 +707,7 @@ pub(super) fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<V
 /// the next line's `prev` made right and `lake_created` saying the same
 /// format, so the whole file is one release's and only its log format is
 /// another's.
-fn as_format(dir: &Path, file: &str, older: u32) -> Result<Vec<Vec<u8>>, Failure> {
+pub(super) fn as_format(dir: &Path, file: &str, older: u32) -> Result<Vec<Vec<u8>>, Failure> {
     let mut prev = Value::Null;
     let mut lines = Vec::new();
     for line in lines_of(dir, file)? {
