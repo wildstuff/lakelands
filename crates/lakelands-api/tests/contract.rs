@@ -26,6 +26,9 @@ fn intent(e: &Error) -> &'static str {
             Refusal::TooLarge { .. } => "a graph measure would reach past the lake's ceiling",
             Refusal::Migration { .. } => "a migration would lose information",
             Refusal::Decided => "the proposal is already decided",
+            Refusal::Repeated { .. } => {
+                "the proposal repeats an earlier place in the list; nothing was written"
+            }
             Refusal::Declined { .. } => {
                 "the host declined the call by policy; nothing ran, a retry answers the same"
             }

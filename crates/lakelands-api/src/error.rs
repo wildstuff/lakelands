@@ -520,6 +520,14 @@ crate::tagged_enum! {
         },
         /// The proposal is already decided.
         Decided,
+        /// A proposal of an `accept_many` list repeats an earlier entry of
+        /// the same list (117): the earlier place, counted from 0, which the
+        /// second copy repeats. The second copy was never decided by anyone,
+        /// unlike [`Refusal::Decided`].
+        Repeated {
+            /// The place of the entry's first copy.
+            index: u64,
+        },
         /// A retry of a call of a verb that reaches outside the lake, or of
         /// its acceptance, found no answer of its executor recorded: the call
         /// is in the log, and a retry runs nothing. The case names its
@@ -611,6 +619,9 @@ impl fmt::Display for Refusal {
                 write!(f, "the migration of `{}` would lose information", report.ty)
             }
             Refusal::Decided => write!(f, "the proposal is already decided"),
+            Refusal::Repeated { index } => {
+                write!(f, "the proposal is listed twice, repeating the one at place {index}")
+            }
             Refusal::OutOfRange { head } => write!(f, "the lake's log ends at position {head}"),
             Refusal::Unknown(u) => f.write_str(u.message()),
         }

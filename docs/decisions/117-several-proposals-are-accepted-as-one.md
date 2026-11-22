@@ -45,8 +45,11 @@ refusal.
   `Error::Accepting { index, proposal, error }`, where `error` is the
   refusal that entry's own accept would have had. Nothing is appended,
   and every proposal of the list stays pending.
-- An entry listed twice is refused as decided at its second place, and
-  so is a proposal already decided.
+- An entry whose proposal id a later entry repeats is refused as
+  repeated at its second place, naming the place of its first copy: the
+  second copy was never decided by anyone, it duplicates the first
+  within the same call. A proposal already decided is refused as
+  decided.
 
 ### What a list holds
 

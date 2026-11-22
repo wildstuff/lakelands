@@ -2213,6 +2213,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Refusal::TooLarge { .. }
             | Refusal::Migration { .. }
             | Refusal::Decided
+            | Refusal::Repeated { .. }
             | Refusal::Declined { .. }
             | Refusal::Unanswered { .. }
             | Refusal::OutOfRange { .. } => {}
@@ -2242,6 +2243,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     report: Box::new(migration_report()),
                 },
                 Refusal::Decided,
+                Refusal::Repeated { index: 0 },
                 Refusal::Declined(said()),
                 Refusal::Unanswered(said()),
                 Refusal::OutOfRange { head: Position(1) },
