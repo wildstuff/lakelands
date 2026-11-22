@@ -163,23 +163,24 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.26.0`.** Lakelands `0.26.0` is the `lakelands` CLI, its
+> **Status: `0.27.0`.** Lakelands `0.27.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
 > conformance suite (1152 checks through the doors and 108 through the
 > engine seam), with 115 decision records and the event log at format
 > version 24, installable from the release. Its budgets: see
 > `docs/budgets.md` for the ceilings and the ratchet bases.
-> Beside what `0.25.0` held (the numbers are issues), a reviewer judges
-> a set of declarations without writing it, at `Catalog::apply_dry_run`
-> and `POST …/schema/apply_dry_run`, refused whole with every problem
-> named and otherwise answered as the plan (lakelands#1819, an API and
-> WIT change a host makes); and `Catalog::accept_many` takes a
-> declaration bundle beside the upserts, retirements and calls it took,
-> each entry judged at the head its predecessors left (lakelands#1818).
-> The log format stays 24: a lake of `0.24.0` is read as it was, and
-> nothing is ingested again. The lake `0.24.0` made through its doors
-> stays kept, never edited, under `docs/log-format/lakes/24/`.
+> Beside what `0.26.0` held (the numbers are issues), a writer's open of
+> a lake `0.23.0` wrote carries it up from format 23 to 24 in place, its
+> tip gaining the v24 `lease_taken` and nothing rewritten (lakelands#1824,
+> an API and WIT change a host makes): the open reports the format it
+> carried the lake up from at `LakeStore::upgraded_at_open`, the CLI says
+> it on the first open and is silent after, and an event below the format
+> before it is damage, refused as `format_falls`.
+> The log format is 24: a lake of `0.24.0` through `0.26.0` is read as it
+> was, and a lake of `0.23.0` is carried up as above; nothing is ingested
+> again. The lakes `0.23.0` and `0.24.0` made through their doors stay
+> kept, never edited, under `docs/log-format/lakes/`.
 
 ## Try it
 
@@ -303,7 +304,10 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones. `0.26.0` built what the status block above lists. `0.25.0`
+milestones. `0.27.0` built what the status block above lists. `0.26.0`
+built judging a set of declarations without writing it, at
+`Catalog::apply_dry_run`, and taking a declaration bundle through
+`Catalog::accept_many` (lakelands#1818, lakelands#1819). `0.25.0`
 built accepting several proposals in one commit, asking a type's vector
 coverage and a purge's report as a principal, and listing a host
 refusal's cause code to every reader of a quarantined row
