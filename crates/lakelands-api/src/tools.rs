@@ -36,7 +36,7 @@ use serde_json::{Map, Value, json};
 
 use crate::describe::{FieldDescription, LakeDescription, TypeDescription, VerbDescription};
 use crate::error::{catalog, closed};
-use crate::id::{RelationName, TypeName, VerbName};
+use crate::id::{RelationName, SourceId, TypeName, VerbName};
 use crate::key::LINK_PREFIX;
 use crate::ontology::{FieldType, StorageKind};
 
@@ -157,6 +157,23 @@ crate::tagged_enum! {
         /// `enact`: a change made against its plan. Served over REST only, as
         /// `plan` is.
         Enact,
+        /// `vector_coverage`: what a type's embedding fields hold. Served
+        /// over REST only; no tool asks it, as coverage is the host's
+        /// operational question
+        /// (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
+        VectorCoverage {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+        },
+        /// `purge_preflight`: what a purge from one source would take,
+        /// optionally under one type. Served over REST only; no tool asks it,
+        /// as a preflight is a purge's own question
+        /// (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
+        PurgePreflight {
+            /// The source.
+            source: SourceId,
+        },
     }
 }
 

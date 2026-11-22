@@ -224,6 +224,7 @@ macro_rules! door_checks {
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
             #[host_ops] a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stale,
+            a_principal_asks_coverage_and_a_purge_preflight_through_the_door,
             #[host_ops] a_purge_that_names_a_type_takes_what_the_source_brought_into_it_alone,
             #[host_ops] a_typed_purge_has_an_id_of_its_own_and_refuses_a_type_it_cannot_take_from,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
@@ -9682,6 +9683,93 @@ pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stal
         store.head().await.unwrap(),
         moved,
         "a purge with nothing to take appends nothing"
+    );
+}
+
+/// A principal asks a type's vector coverage and a source's purge
+/// preflight through the catalog it holds, as any other read is asked: a
+/// type it is shown no embedding field of answers an empty coverage, one
+/// it is not shown `not_found`; the preflight answers the report the
+/// purge would act on for the type named and appends nothing; one who
+/// may not purge from the source is refused, naming no field
+/// (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
+pub async fn a_principal_asks_coverage_and_a_purge_preflight_through_the_door(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (c, own, stranger) = (&f.catalog, &f.cast.owner, &f.cast.stranger);
+    let empty = c.vector_coverage(own, &ty(INVOICE)).await.unwrap();
+    assert!(
+        empty.data.is_empty(),
+        "`{INVOICE}` embeds nothing: {empty:?}"
+    );
+    let hidden = c.vector_coverage(stranger, &ty(PARTNER)).await;
+    assert_eq!(
+        hidden.err(),
+        Some(Error::NotFound {
+            missing: Missing::Type { name: ty(PARTNER) }
+        }),
+        "a type the asker is not shown is missing, not empty"
+    );
+    // A source's field is what a purge may retire; the fixture's types are
+    // authored, so the check declares its own.
+    let d = json!({"declare": "type", "name": "vendor",
+        "fields": [{"name": "name", "type": {"kind": "text"}, "authority": "source"}]});
+    c.declare(own, serde_json::from_value(d).unwrap())
+        .await
+        .expect("the owner declares a type a source feeds");
+    let record = |k: &'static str| SourceRecord {
+        source: None,
+        upstream: None,
+        ty: ty("vendor"),
+        key: key(k),
+        fields: patch(&[("name", json!(k))]),
+        seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
+    };
+    let mut acks = c
+        .ingest(
+            own,
+            &"crm".into(),
+            stream::of(vec![record("p1"), record("p2")]),
+        )
+        .await
+        .unwrap();
+    let said = stream::collect(&mut acks).await;
+    assert!(said.iter().all(Result::is_ok), "feeding `vendor`: {said:?}");
+    let before = f.store.head().await.unwrap();
+    let seen = c
+        .purge_preflight(own, &"crm".into(), Some(&ty("vendor")))
+        .await
+        .unwrap();
+    assert_eq!(seen.retired, 2, "{seen:?}");
+    assert_eq!(seen.ty.as_ref(), Some(&ty("vendor")), "{seen:?}");
+    assert!(!seen.report_id.is_empty(), "{seen:?}");
+    assert_eq!(
+        f.store.head().await.unwrap(),
+        before,
+        "a preflight appends nothing"
+    );
+    for k in ["p1", "p2"] {
+        c.get(own, &ty("vendor"), get(k))
+            .await
+            .expect("a preflight retires nothing");
+    }
+    let refused = c.purge_preflight(stranger, &"crm".into(), None).await;
+    assert_eq!(
+        refused.err(),
+        Some(Error::Refused {
+            field: None,
+            reason: Refusal::NotGranted
+        }),
+        "one who may not purge from the source may not ask its preflight"
+    );
+    assert_eq!(
+        f.store.head().await.unwrap(),
+        before,
+        "a refused preflight appends nothing"
     );
 }
 
