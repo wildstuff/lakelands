@@ -88,8 +88,8 @@ fn failed_drops_path() -> PathBuf {
 
 /// Say a drop failed, with the schema's name and the server's message, in
 /// the line the end-of-run check prints when a schema is left behind.
-fn note_failed_drop(schema: &str, e: &postgres::Error) {
-    let line = format!("{schema}: {}\n", said(e));
+pub fn note_failed_drop(schema: &str, e: &postgres::Error) {
+    let line = format!("{schema}: {}\n", lakelands_test_pg::said(e));
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -97,36 +97,10 @@ fn note_failed_drop(schema: &str, e: &postgres::Error) {
         .and_then(|mut log| log.write_all(line.as_bytes()));
 }
 
-/// What the server said of a failed statement: its severity, SQLSTATE and
-/// primary message. `DETAIL` and `HINT` stay out, as they do of the
-/// engine's answers (024): they can quote a record's values.
-fn said(e: &postgres::Error) -> String {
-    match e.as_db_error() {
-        Some(db) => format!("{} {}: {}", db.severity(), db.code().code(), db.message()),
-        None => e.to_string(),
-    }
-}
-
-/// Whether a drop failed for a reason a holder ending may clear: the
-/// schema was locked, or the statement ran out of time.
-fn held_or_timed_out(e: &postgres::Error) -> bool {
-    use postgres::error::SqlState;
-    let code = e.code();
-    code == Some(&SqlState::LOCK_NOT_AVAILABLE)
-        || code == Some(&SqlState::T_R_DEADLOCK_DETECTED)
-        || code == Some(&SqlState::QUERY_CANCELED)
-}
-
-/// Drop a schema, trying once more if a lock or a timeout refused it, and
+/// Drop a schema, retrying while a live holder keeps it locked, and
 /// saying so where the end-of-run check reads it if it still refuses.
 fn drop_and_note(client: &mut postgres::Client, schema: &str) {
-    let statement = format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE");
-    let mut outcome = client.batch_execute(&statement);
-    if matches!(&outcome, Err(e) if held_or_timed_out(e)) {
-        std::thread::sleep(Duration::from_millis(250));
-        outcome = client.batch_execute(&statement);
-    }
-    if let Err(e) = outcome {
+    if let Err(e) = lakelands_test_pg::drop_schema_on(client, schema) {
         note_failed_drop(schema, &e);
     }
 }

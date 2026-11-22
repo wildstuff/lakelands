@@ -23,6 +23,7 @@ tokio-postgres-rustls = { version = "0.14", default-features = false, features =
 
 [dev-dependencies]
 serde_json.workspace = true
+lakelands-test-pg.workspace = true
 lakelands-store.workspace = true
 lakelands-backings.workspace = true
 peak_alloc.workspace = true

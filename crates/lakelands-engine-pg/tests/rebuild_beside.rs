@@ -86,8 +86,7 @@ fn there(url: &str, name: &str) -> bool {
 /// at once, so each drops its own only.
 fn done(url: &str, schema: &str) {
     common::drop_schema(url, schema);
-    let scratch = common::scratch_of(schema);
-    run(url, format!("DROP SCHEMA IF EXISTS \"{scratch}\" CASCADE"));
+    common::drop_schema(url, &common::scratch_of(schema));
 }
 
 /// The child: folds into the scratch and dies before it marks it.
