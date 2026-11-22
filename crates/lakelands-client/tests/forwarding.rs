@@ -148,21 +148,9 @@ impl Held {
             ..
         } = &self.location.engine
         {
-            drop_schema(url, schema);
+            lakelands_test_pg::drop_all_off_thread(vec![(url.clone(), schema.clone())]);
         }
     }
-}
-
-/// Drop a test lake's schema. On a thread of its own: the synchronous
-/// client blocks on a runtime of its own, which an async body cannot.
-fn drop_schema(url: &str, schema: &str) {
-    let (url, schema) = (url.to_owned(), schema.to_owned());
-    let _ = std::thread::spawn(move || {
-        if let Ok(mut client) = postgres::Client::connect(&url, postgres::NoTls) {
-            let _ = client.batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"));
-        }
-    })
-    .join();
 }
 
 /// A lake at `location`: its writer served on loopback, and a forwarding

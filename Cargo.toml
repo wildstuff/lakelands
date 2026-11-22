@@ -13,6 +13,7 @@ members = [
     "crates/lakelands-backings",
     "crates/lakelands-client",
     "crates/lakelands-cypher",
+    "crates/lakelands-test-pg",
 ]
 
 [workspace.package]
@@ -72,6 +73,9 @@ lakelands-api = { path = "crates/lakelands-api" }
 lakelands-backings = { path = "crates/lakelands-backings" }
 lakelands-cypher = { path = "crates/lakelands-cypher" }
 lakelands-door-checks = { path = "crates/lakelands-door-checks" }
+# The teardown of the schemas a PostgreSQL test makes, shared by every
+# test binary that has one (lakelands#1816).
+lakelands-test-pg = { path = "crates/lakelands-test-pg" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -29,9 +29,11 @@ struct Made {
 impl Drop for Made {
     fn drop(&mut self) {
         for s in &self.schemas {
-            let scratch = common::scratch_of(s);
-            let drop = format!("DROP SCHEMA IF EXISTS \"{s}\", \"{scratch}\" CASCADE");
-            let _ = self.client.batch_execute(&drop);
+            for schema in [s.clone(), common::scratch_of(s)] {
+                if let Err(e) = lakelands_test_pg::drop_schema_on(&mut self.client, &schema) {
+                    common::note_failed_drop(&schema, &e);
+                }
+            }
         }
         for t in &self.spaces {
             let drop = format!("DROP TABLESPACE IF EXISTS \"{t}\"");

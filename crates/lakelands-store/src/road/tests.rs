@@ -336,11 +336,7 @@ impl Drop for Place {
         }
         if let Some((url, schema)) = self.schema.take() {
             // The client runs a runtime of its own: not on a runtime's thread.
-            let dropped = std::thread::spawn(move || {
-                let mut client = postgres::Client::connect(&url, postgres::NoTls)?;
-                client.batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
-            });
-            let _ = dropped.join();
+            lakelands_test_pg::drop_all_off_thread(vec![(url, schema)]);
         }
     }
 }

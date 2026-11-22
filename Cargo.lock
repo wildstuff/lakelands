@@ -1113,6 +1113,7 @@ dependencies = [
  "lakelands-engine-sqlite",
  "lakelands-server",
  "lakelands-store",
+ "lakelands-test-pg",
  "postgres",
  "rusqlite",
  "serde",
@@ -1139,7 +1140,7 @@ dependencies = [
  "lakelands-engine-sqlite",
  "lakelands-server",
  "lakelands-store",
- "postgres",
+ "lakelands-test-pg",
  "rustls",
  "serde",
  "serde_json",
@@ -1216,6 +1217,7 @@ dependencies = [
  "lakelands-backings",
  "lakelands-core",
  "lakelands-store",
+ "lakelands-test-pg",
  "peak_alloc",
  "postgres",
  "rustls",
@@ -1283,13 +1285,20 @@ dependencies = [
  "lakelands-engine-mem",
  "lakelands-engine-pg",
  "lakelands-engine-sqlite",
- "postgres",
+ "lakelands-test-pg",
  "rust_decimal",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "lakelands-test-pg"
+version = "0.27.0"
+dependencies = [
+ "postgres",
 ]
 
 [[package]]
