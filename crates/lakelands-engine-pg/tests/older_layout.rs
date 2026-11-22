@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::Situation;
-use lakelands_api::event::LOG_FORMAT_VERSION;
+use lakelands_api::event::{LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
 use lakelands_api::id::TypeName;
 use lakelands_api::ontology::{
     Authority, FieldDecl,
@@ -210,7 +210,7 @@ async fn a_log_on_text_columns_is_refused_by_its_format() {
 
 /// The log taken back to 0.22.0's: `segment`, `fence` and `id` on each
 /// row, no `last`, `kept`, `running` or `ids`, `frames` beside it, its
-/// lines in the format before.
+/// lines in a format before the oldest this release reads.
 fn as_22(s: &str) -> String {
     format!(
         "DROP TABLE {s}.ids; ALTER TABLE {s}.segments DROP COLUMN running; \
@@ -222,7 +222,7 @@ fn as_22(s: &str) -> String {
          UPDATE {s}.log SET bytes = convert_to(replace(replace(convert_from(bytes, 'UTF8'), \
          '\"v\":{now}', '\"v\":{then}'), '\"format\":{now}', '\"format\":{then}'), 'UTF8')",
         now = LOG_FORMAT_VERSION,
-        then = LOG_FORMAT_VERSION - 1,
+        then = OLDEST_LOG_FORMAT - 1,
     )
 }
 
@@ -248,7 +248,7 @@ async fn a_log_of_the_layout_before_is_refused_by_its_format() {
             .unwrap();
         one(&url, &rows)
     });
-    let then = u64::from(LOG_FORMAT_VERSION - 1);
+    let then = u64::from(OLDEST_LOG_FORMAT - 1);
     for mode in [OpenMode::Read, OpenMode::Write, OpenMode::Rebuild] {
         let refused = open(&location, mode).await.err().unwrap();
         let found = match refused.situation() {

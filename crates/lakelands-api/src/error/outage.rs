@@ -790,6 +790,8 @@ catalog! {
         CreatedInAnother { format: u64, reads: u64 } => "its `lake_created` says log format {format}, another than its own line's or one this release does not read; it writes format {reads}",
         /// Its fence is below the fence of the event before it.
         FenceBelow { fence: u64, floor: u64 } => "it carries fence {fence}, below the fence {floor} of the event before it: fences never fall",
+        /// Its log format is below the format of an event before it.
+        FormatFalls { v: u64, floor: u64 } => "it is written in log format {v}, below the format {floor} of an event before it: a lake's formats never fall",
         /// `context` carries `cause`, which the envelope carries.
         CauseInContext => "`context` carries `cause`, which the envelope carries",
         /// `context` carries `on_behalf_of`, which the envelope carries.

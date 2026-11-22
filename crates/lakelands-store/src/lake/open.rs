@@ -117,7 +117,7 @@ impl Lake {
         let opener = opener(location, &seams)?;
         // A lake of a format this release does not read is not opened: its
         // engine judges, makes and changes nothing of it, in any mode (054).
-        log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
+        let written = log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
         // A writer's open of a projection an older build laid out rebuilds
         // it, as a writer's open is the place a release pays for its
         // steps; a reader's, and one of a newer layout or of none, is
@@ -220,6 +220,11 @@ impl Lake {
             }
         }
         assembled.rebuilt_at_open = said;
+        // The `lease_taken` appended is in this release's format: on a lake
+        // an older release wrote last, it carries the lake up, and the
+        // events before it stay as they were written (054).
+        let older = written.filter(|v| *v < u64::from(LOG_FORMAT_VERSION));
+        assembled.upgraded_at_open = older.filter(|_| lease.is_some()).map(|v| v as u32);
         Ok(assembled)
     }
 
@@ -332,6 +337,7 @@ impl Lake {
             thinning: Mutex::default(),
             reclaim_owed: Mutex::new(None),
             rebuilt_at_open: None,
+            upgraded_at_open: None,
         }
     }
 }

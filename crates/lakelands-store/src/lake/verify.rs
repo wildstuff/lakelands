@@ -22,6 +22,7 @@ impl Lake {
         };
         let mut before = prev.as_ref().map(|e| (e.position, e.hash.clone()));
         let mut fence = prev.as_ref().map(|e| e.fence);
+        let mut format = prev.as_ref().map(|e| e.v);
         let mut known = prev.map(|e| e.known_at);
         let segments = self.engine.segments()?;
         // Where a segment after the first begins: behind each sealed one.
@@ -68,6 +69,14 @@ impl Lake {
                     return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 fence = Some(e.fence);
+                // Formats never fall (`docs/log-format.md` §6): a writer's
+                // open carries an older lake up, never down.
+                if let Some(floor) = format.filter(|f| e.v < *f) {
+                    let (v, floor) = (u64::from(e.v), u64::from(floor));
+                    let flaw = Flaw::FormatFalls { v, floor };
+                    return Err(damaged(Part::Log, Some(e.position), flaw));
+                }
+                format = Some(e.v);
                 if let EventBody::Checkpoint {
                     through,
                     hash,

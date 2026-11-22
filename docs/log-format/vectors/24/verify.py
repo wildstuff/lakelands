@@ -201,6 +201,8 @@ def restored(lines, need, before=None):
         # A line's format is read before anything else in it, a frame
         # line's as an event's: a line of another format is refused for
         # that, under a frame or not (log-format §1.2 and §6).
+        # INTERIM: lakelands#1826 — one format per archive, so the archive
+        # of a lake carried up from format 23 is refused here.
         need(read.get("v") == FORMAT, f"a line of format {read.get('v')} is not the one format, {FORMAT}")
         if "events" in read or "frame" in read:
             need(left == 0, "a frame line stands among the lines a frame covers")
@@ -235,7 +237,7 @@ BREAKS = {
     "framed_twice": "which its frame holds",
     "frame_short": "of a frame's lines still to come",
     "not_a_frame": "a frame line holds `events` from 1",
-    "format_other": "is not the one format",
+    "frame_other": "is not the one format",
     "position": "is not the position after",
     "prev_hash": "does not name the hash of the event before it",
     "start_unheld": "a segment's first event line holds its `position` and its `prev`",
@@ -1040,7 +1042,7 @@ def stamp(n):
         entry["stored"] = [moved(json.loads(line)) for line in entry["stored"]]
         entry["after"] = entry["after"] and framed["after"]
         flaw = entry["refused"]["flaw"]
-        for name in ("reads", "v") if flaw["code"] == "format_other" else ():
+        for name in ("frame", "v") if flaw["code"] == "frame_other" else ():
             flaw[name] += n - FORMAT
     path.write_text(json.dumps(framed, indent=2, ensure_ascii=False) + "\n", "utf-8")
 

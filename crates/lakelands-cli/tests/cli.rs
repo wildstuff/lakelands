@@ -2546,7 +2546,7 @@ fn an_archive_of_an_older_log_format_is_refused_as_a_format_by_verify_restore_an
     assert_eq!(from.run(&["export", "--to", &dir]).code, 0);
     as_release_of_format_22(&dir);
     let format = "lake `finance` is written in log format 22, and this release reads log \
-                  formats 24 to 24 and writes 24";
+                  formats 23 to 24 and writes 24";
     let way_back = "a release that reads log format 22; it is not damaged";
 
     // `restore --check` verifies without opening: exit status 1, said as
@@ -2609,6 +2609,52 @@ fn an_archive_of_an_older_log_format_is_refused_as_a_format_by_verify_restore_an
         before,
         "a refused import wrote an event"
     );
+}
+
+/// A lake 0.23.0 wrote, imported as it is kept, is carried up to this
+/// release's format by the first writer's open, which says so on stderr
+/// once; the next writer's open finds it carried up and says nothing of it
+/// (lakelands#1824). Each command is a process of its own, as an operator
+/// runs it, so each opens the lake anew.
+#[test]
+fn the_first_writers_open_of_a_lake_of_format_23_says_it_carried_it_up() {
+    use std::process::Command;
+
+    let lakelands = env!("CARGO_BIN_EXE_lakelands");
+    let sh = Shell::on("carried-up-23", Backend::Store);
+    let run = |args: &[&str]| {
+        let out = Command::new(lakelands)
+            .arg("--root")
+            .arg(&sh.root)
+            .args(args)
+            .output()
+            .unwrap();
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(out.status.success(), "{args:?}: {err}");
+        err
+    };
+    let kept = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/23");
+    let root = sh.root.display().to_string();
+    run(&["init", &root]);
+    run(&["lake", "new", "kept23"]);
+    fs::create_dir_all(sh.root.join("keys")).unwrap();
+    fs::copy(
+        kept.join("keys/kept23.keys.json"),
+        sh.root.join("keys/kept23.keys.json"),
+    )
+    .unwrap();
+    sh.file(
+        "lakelands.json",
+        r#"{"lakelands": 1, "owner": "owner", "keys": {"keyring": "keys"}}"#,
+    );
+    let said = "lakelands: the lake was carried up from log format 23 to 24 at this open";
+    let imported = run(&["import", &kept.display().to_string()]);
+    assert!(!imported.contains("carried up"), "{imported}");
+    let first = run(&["compact"]);
+    assert_eq!(first.lines().collect::<Vec<_>>(), [said], "{first}");
+    let second = run(&["compact"]);
+    assert!(!second.contains("carried up"), "{second}");
+    run(&["verify"]);
 }
 
 /// The built binary moves a lake between two roots, each command in a

@@ -1699,7 +1699,7 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
 check!(
     OLDER_FORMAT_REFUSED =
         a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_read,
-    "098 and the log format §6: a release reads one format and older ones are not read at all. A lake every line of which is of format 22 and which says so in its `lake_created` is refused at an open in every mode as `log_format`, naming the lake, 22 and the one format this release reads, leaving its log, its projection and its lease as they were; an export of format 22 is refused by its verification and its import as `log_format` the same way, naming its lake, 22 and the one format this release reads, and no lake is left behind it",
+    "098 and the log format §6: a release reads the formats from its oldest to its own and older ones are not read at all. A lake every line of which is of format 22 and which says so in its `lake_created` is refused at an open in every mode as `log_format`, naming the lake, 22 and the formats this release reads, leaving its log, its projection and its lease as they were; an export of format 22 is refused by its verification and its import as `log_format` the same way, naming its lake, 22 and the formats this release reads, and no lake is left behind it",
     given
 );
 
@@ -1740,9 +1740,9 @@ async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_re
             matches!(e.as_ref().and_then(Error::situation),
                 Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
                     if l == store.lake().as_str() && *found == u64::from(OLDER)
-                        && *r == u64::from(reads) && *oldest == Some(u64::from(reads))),
+                        && *r == u64::from(reads) && *oldest == Some(lakelands_api::event::OLDEST_LOG_FORMAT.into())),
             "{door} of an export of format {OLDER} is refused as `log_format`, naming the \
-             lake, that format and the one this release reads, {reads}; it answered {e:?}"
+             lake, that format and the formats this release reads, up to {reads}; it answered {e:?}"
         );
     }
     // Then a lake: the same events laid in a log of their own, as a
@@ -1776,9 +1776,9 @@ async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_re
             matches!(e.as_ref().and_then(Error::situation),
                 Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
                     if l == lake.as_str() && *found == u64::from(OLDER)
-                        && *r == u64::from(reads) && *oldest == Some(u64::from(reads))),
+                        && *r == u64::from(reads) && *oldest == Some(lakelands_api::event::OLDEST_LOG_FORMAT.into())),
             "a lake of format {OLDER} is refused at an open for {mode:?} as `log_format`, naming \
-             the lake, that format and the one this release reads, {reads}; it answered {e:?}"
+             the lake, that format and the formats this release reads, up to {reads}; it answered {e:?}"
         );
         let before = &*first.get_or_insert(c.before.clone());
         ensure!(
@@ -1799,7 +1799,7 @@ async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_re
 check!(
     OLDER_ARCHIVE_REFUSED =
         an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_written,
-    "098 and the log format §6: a backup or an export of another release's format is the operator's data, not damage. An archive whose two ends contradict each other — a first line whose own `lake_created` says a format other than its `v`, or a last line older than the first — is damage, refused as the open of the same events refuses it. Its verification — the check `restore <dir> --check` runs — and its import — what `restore <dir>` and `import <dir>` run — are refused as `log_format`, naming its lake, 22 and the one format this release reads and writes; the target lake is not looked at, so an import into a lake that holds events answers `log_format` and not its non-empty precondition, and the lake's head is where it was. An archive of that format whose appends are stored as blocks — any append of two events or more — is refused the same way, its ends read from the events its line and its block restore to rather than from its bytes as lines",
+    "098 and the log format §6: a backup or an export of another release's format is the operator's data, not damage. An archive whose two ends contradict each other — a first line whose own `lake_created` says a format other than its `v`, or a last line older than the first — is damage, refused as the open of the same events refuses it. Its verification — the check `restore <dir> --check` runs — and its import — what `restore <dir>` and `import <dir>` run — are refused as `log_format`, naming its lake, 22 and the formats this release reads and the one it writes; the target lake is not looked at, so an import into a lake that holds events answers `log_format` and not its non-empty precondition, and the lake's head is where it was. An archive of that format whose appends are stored as blocks — any append of two events or more — is refused the same way, its ends read from the events its line and its block restore to rather than from its bytes as lines",
     given
 );
 
@@ -1832,7 +1832,7 @@ async fn an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_wri
         matches!(e.situation(),
             Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
                 if l == lake.as_str() && *found == u64::from(OLDER)
-                    && *r == u64::from(reads) && *oldest == Some(u64::from(reads)))
+                    && *r == u64::from(reads) && *oldest == Some(lakelands_api::event::OLDEST_LOG_FORMAT.into()))
     };
     // What `restore --check` runs.
     let e = export::verify(&from)
@@ -1841,8 +1841,8 @@ async fn an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_wri
     ensure!(
         as_older(&e),
         "the verification of an archive of format {OLDER}, which `restore --check` runs, is \
-         refused as `log_format`, naming its lake, that format and the one this release reads, \
-         {reads}; it answered {e:?}"
+         refused as `log_format`, naming its lake, that format and the formats this release reads, \
+         up to {reads}; it answered {e:?}"
     );
     // What `restore` and `import` run, into a lake that holds nothing.
     let fresh: lakelands_api::LakeId = format!("{}_{OLDER}", lake).into();

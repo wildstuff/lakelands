@@ -1111,7 +1111,7 @@ pub const ALL: &[Check] = &[
     builds::BUILD_EXPORT_IMPORT_SAME_LAKE,
     kept_builds::KEPT_BUILD_READ_ANSWERS_AS_BEFORE,
     kept_lake::LAKE_24_READ,
-    kept_lake::LAKE_23_REFUSED,
+    kept_lake::LAKE_23_READ,
     kept_builds::KEPT_BUILD_WRITE_BESIDE,
     kept_builds::KEPT_BUILD_WRITES_GO_ON,
     kept_builds::KEPT_BUILD_RESTART_FINISHES,

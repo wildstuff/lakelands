@@ -282,6 +282,8 @@ fn padded(b: &str) -> bool {
 /// rule for a log written by something else.
 #[doc(hidden)]
 pub fn misplaced(event: &Event) -> Option<Flaw> {
+    // INTERIM: lakelands#1827 — a body only format 24 has is not yet
+    // refused in an event of format 23.
     if event.context.cause.is_some() {
         return Some(Flaw::CauseInContext);
     }
@@ -375,7 +377,9 @@ fn format_of(line: &Value) -> u64 {
 /// the event that carries the contradiction: a `lake_created` whose own
 /// line says a `v` other than the `format` it says (one release wrote the
 /// line and its body at once), and a last event older than the first (a
-/// release appends only onto a lake whose first event it reads). An end
+/// release appends only onto a lake whose first event it reads, so a
+/// lake's formats never fall), as `format_falls` where this release reads
+/// the tip's format and `format_other` where it does not. An end
 /// that is no value at all, or no JSON, is left to the caller, which says
 /// what is wrong with it.
 ///
@@ -407,11 +411,15 @@ pub fn one_format(
     if let (Some(line), Some(last)) = (first.and_then(number), tip.and_then(number))
         && last < line
     {
-        return Err(crate::damaged(
-            Part::Log,
-            Some(at.1),
-            Flaw::FormatOther { v: last, reads },
-        ));
+        // A tip this release does not read is named by its number first.
+        let flaw = match reads_format(last) {
+            true => Flaw::FormatFalls {
+                v: last,
+                floor: line,
+            },
+            false => Flaw::FormatOther { v: last, reads },
+        };
+        return Err(crate::damaged(Part::Log, Some(at.1), flaw));
     }
     let said = [
         first.map(format_of),

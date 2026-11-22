@@ -8,11 +8,14 @@
 //! a later release would leave it, its tip in that release's format and its
 //! projection without a layout mark, is refused for its format in every
 //! mode and not for its layout, with no table made and no row changed.
-//! A lake an earlier release left, its log in its format and a table it
-//! wrote that this build does not know, is refused by its format too, not
-//! as a schema that is not a lake's (lakelands#1764). An import onto
-//! either lake is answered from the same question, and changes no row of
-//! it.
+//! A lake an earlier release left, its log in a format this release no
+//! longer reads and a table it wrote that this build does not know, is
+//! refused by its format too, not as a schema that is not a lake's
+//! (lakelands#1764). An import onto either lake is answered from the same
+//! question, and changes no row of it. A schema 0.23.0 left, its log in
+//! format 23, is opened in place: a writer's open carries it up to this
+//! release's format, under 0.23.0's layout mark or an older one
+//! (lakelands#1824).
 
 mod common;
 
@@ -21,7 +24,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, OpenMode};
 use lakelands_api::error::{Case, Situation};
-use lakelands_api::event::{Digest, EventBody, LOG_FORMAT_VERSION};
+use lakelands_api::event::{Digest, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
 use lakelands_api::seam::Seams;
 use lakelands_api::{Location, Position, Timestamp};
 use lakelands_core::canonical;
@@ -135,7 +138,7 @@ fn a_lake_of_another_release_is_refused_for_its_format_and_not_touched() {
     };
     let reads = LOG_FORMAT_VERSION;
     let on = tokio::runtime::Runtime::new().unwrap();
-    for (later, found) in [(true, reads + 1), (false, reads - 1)] {
+    for (later, found) in [(true, reads + 1), (false, OLDEST_LOG_FORMAT - 1)] {
         let (location, schema, export) = made(&url, &on);
         let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
         if later {
@@ -166,9 +169,9 @@ fn a_lake_of_another_release_is_refused_for_its_format_and_not_touched() {
             let unmark = format!("DELETE FROM \"{schema}\".meta WHERE k = 'layout'");
             assert_eq!(db.execute(&unmark, &[]).unwrap(), 1);
         } else {
-            // Its writer's log and its format taken back one release:
-            // every line's `v` and the `lake_created` body's `format`,
-            // as that release wrote them.
+            // Its writer's log and its format taken back below the oldest
+            // this release reads: every line's `v` and the `lake_created`
+            // body's `format`, as that release wrote them.
             let older = format!(
                 "UPDATE \"{schema}\".log SET bytes = convert_to(replace(replace(convert_from(bytes, 'UTF8'), \
                  '\"v\":{reads}', '\"v\":{found}'), '\"format\":{reads}', '\"format\":{found}'), 'UTF8')"
@@ -208,5 +211,108 @@ fn a_lake_of_another_release_is_refused_for_its_format_and_not_touched() {
         assert_eq!(held(&url, &schema), before, "an import changed the schema");
         common::drop_schema(&url, &schema);
         let _ = std::fs::remove_dir_all(&export);
+    }
+}
+
+/// A schema 0.23.0 left, opened in place by a writer (lakelands#1824).
+/// 0.23.0 laid a lake's schema out as this release does: the same tables
+/// and columns, under layout mark 13, which it wrote. Its log is the lake
+/// 0.23.0 made (`docs/log-format/lakes/23/`), every event in format 23,
+/// held as 0.23.0 held it. The writer's open keeps every table, carries the
+/// lake up by the `lease_taken` it appends, the log's first event of format
+/// 24, and says so; the lake verifies, and the next writer's open carries
+/// nothing up. Under an older layout mark, as a projection an older build
+/// laid out, the same open rebuilds the projection, says why, and carries
+/// the lake up too. (A schema with no mark is no schema 0.23.0 left: it
+/// marked its layout, and such a schema is refused by its layout.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_schema_0_23_0_left_is_carried_up_in_place_by_a_writers_open() {
+    use lakelands_core::conformance::fixture::log_events;
+    let Some(url) = common::url_or_skip("a schema 0.23.0 left") else {
+        return;
+    };
+    let kept = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/23");
+    for marked in [13_i64, 12] {
+        let schema = common::fresh_schema();
+        let location = common::location(&url, "kept23", &schema);
+        // The file keyring the lake shipped with, copied: a keyring writes.
+        let ring = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{schema}.keys"));
+        let _ = std::fs::remove_dir_all(&ring);
+        std::fs::create_dir_all(&ring).unwrap();
+        let file = "kept23.keys.json";
+        std::fs::copy(kept.join("keys").join(file), ring.join(file)).unwrap();
+        let seams = Seams {
+            keys: Some(Arc::new(lakelands_backings::keyring::FileKeyring::new(
+                &ring,
+            ))),
+            ..seams()
+        };
+        // The schema as 0.23.0 left it: its log of format 23, row for row,
+        // and its projection folded.
+        lakelands_store::import(location.clone(), seams.clone(), kept.clone())
+            .await
+            .unwrap();
+        // The blocking client runs where the runtime lets a worker block.
+        use tokio::task::block_in_place as sync;
+        let tables = |url: &str| -> Vec<String> {
+            sync(|| held(url, &schema).into_iter().map(|t| t.0).collect())
+        };
+        let before = tables(&url);
+        let mark = format!("SELECT n FROM \"{schema}\".meta WHERE k = 'layout'");
+        let layout = |url: &str| -> Option<i64> {
+            sync(|| {
+                let mut db = postgres::Client::connect(url, postgres::NoTls).unwrap();
+                db.query_one(&mark, &[]).unwrap().get(0)
+            })
+        };
+        assert_eq!(layout(&url), Some(13), "0.23.0 marked its layout 13");
+        if marked != 13 {
+            let older = format!("UPDATE \"{schema}\".meta SET n = {marked} WHERE k = 'layout'");
+            sync(|| {
+                let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+                assert_eq!(db.execute(&older, &[]).unwrap(), 1);
+            });
+        }
+        let store = lakelands_store::open(location.clone(), seams.clone(), OpenMode::Write);
+        let store = store.await.unwrap();
+        assert_eq!(store.upgraded_at_open(), Some(23), "marked: {marked}");
+        assert_eq!(
+            store.rebuilt_at_open().is_some(),
+            marked != 13,
+            "marked: {marked}"
+        );
+        // While the open's rebuild folds, the feed leaves a reaction it
+        // cannot decide yet (the `trigger_fired` at 15) to a later poll:
+        // the log is followed until it reaches the head.
+        let head = store.head().await.unwrap();
+        let asked = std::time::Instant::now();
+        let log = loop {
+            let log = log_events(store.as_ref()).await.unwrap();
+            if log.last().is_some_and(|e| e.position == head) {
+                break log;
+            }
+            assert!(
+                asked.elapsed() < std::time::Duration::from_secs(60),
+                "marked: {marked}: the feed reaches {head} within a minute"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        let formats: Vec<_> = log.iter().map(|e| (e.v, e.body.kind())).collect();
+        let (tip, below) = formats.split_last().unwrap();
+        assert_eq!(*tip, (24, "lease_taken"), "marked: {marked}");
+        assert!(below.iter().all(|(v, _)| *v == 23), "{formats:?}");
+        store.verify(None, None).await.unwrap();
+        store.close().await.unwrap();
+        drop(store);
+        assert_eq!(tables(&url), before, "the open changed the schema's tables");
+        assert_eq!(layout(&url), Some(13), "marked: {marked}");
+        let again = lakelands_store::open(location.clone(), seams, OpenMode::Write);
+        let again = again.await.unwrap();
+        assert_eq!(again.upgraded_at_open(), None, "carried up twice");
+        assert_eq!(again.rebuilt_at_open(), None, "rebuilt twice");
+        again.close().await.unwrap();
+        drop(again);
+        sync(|| common::drop_schema(&url, &schema));
+        let _ = std::fs::remove_dir_all(&ring);
     }
 }

@@ -610,6 +610,10 @@ impl LakeStore for ForwardingLake {
         self.local.rebuilt_at_open()
     }
 
+    fn upgraded_at_open(&self) -> Option<u32> {
+        self.local.upgraded_at_open()
+    }
+
     async fn restrict(&self, _: &TypeName, _: &RecordKey, _: String) -> Result<Position> {
         Err(self.read_only())
     }

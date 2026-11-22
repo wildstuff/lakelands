@@ -1455,7 +1455,7 @@ const BREAKS: [&str; 8] = [
     "framed_twice",
     "frame_short",
     "not_a_frame",
-    "format_other",
+    "frame_other",
     "position",
     "prev_hash",
     "start_unheld",
@@ -1494,7 +1494,8 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
 /// The negative vector `negative/another-format`: the first segment of
 /// the vectors with the last event written in the format before this
 /// release's, its hash made right. `export::verify` refuses it at that
-/// position naming the format and what it reads
+/// position as a format below the one before it: a lake's formats never
+/// fall, though the release reads the older one
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`),
 /// and `verify.py`, which reads the one format, refuses it there too.
 #[test]
@@ -1521,8 +1522,8 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
         Err(lakelands_api::Error::Unavailable { situation }) => assert!(
             matches!(
                 &*situation,
-                Situation::Damaged { position: Some(at), flaw: Flaw::FormatOther { v, reads: r }, .. }
-                    if at.0 == 6 && *v == reads - 1 && *r == reads
+                Situation::Damaged { position: Some(at), flaw: Flaw::FormatFalls { v, floor }, .. }
+                    if at.0 == 6 && *v == reads - 1 && *floor == reads
             ),
             "{situation}"
         ),
