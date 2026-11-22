@@ -6,6 +6,7 @@
 //! values stay, and the act is one `values_erased` event.
 
 use lakelands_api::error::Flaw;
+use lakelands_api::event::OLDEST_LOG_FORMAT;
 use lakelands_api::quarantine::{ClosedWhy, QuarantineId};
 use lakelands_api::seam::ERASE_ON_CLOSE_SETTING;
 use lakelands_api::write::{EraseReport, Selection};
@@ -88,6 +89,11 @@ check!(
 check!(
     ERASE_NOT_AS_REMOVED = a_values_removed_of_a_record_is_damage,
     "115: a `values_removed` whose selection is a record, its hash made right, is refused as damage by a verifier and by an import",
+    given
+);
+check!(
+    ERASE_IN_OLDEST_FORMAT = a_values_erased_in_the_oldest_format_is_damage,
+    "115 and 054: a lake of format 23 carrying a `values_erased`, a body format 23 has not, its hashes and `lake_created` made right, is refused by its verification and its import at the erase's position as damage, naming the body and the two formats",
     given
 );
 check!(
@@ -588,6 +594,33 @@ async fn a_values_removed_of_a_record_is_damage(store: Store, given: Given) -> H
         damaged(imported.as_ref()),
         "an import refuses it as damage; it answered {imported:?}"
     );
+    Ok(())
+}
+
+async fn a_values_erased_in_the_oldest_format_is_damage(store: Store, given: Given) -> Held {
+    use super::export::{as_format, files};
+    let (l, dir) = (Lake::of(store.as_ref()), given.scratch.join("x"));
+    one(store.as_ref(), &l).await?;
+    erase(store.as_ref(), &rec("visit", "v1", None)).await?;
+    let head = store.head().await.must("reading the head")?;
+    let _ = std::fs::remove_dir_all(&given.scratch);
+    let write = crate::export::write(store.as_ref(), &dir);
+    write.await.must("exporting")?;
+    let file = files(&dir)?.pop();
+    let file = file.ok_or_else(|| Failure::new("it has a log file"))?;
+    let oldest = OLDEST_LOG_FORMAT;
+    as_format(&dir, &file, oldest)?;
+    let damaged = |e: Option<&Error>| {
+        matches!(e.and_then(Error::situation),
+            Some(Situation::Damaged { position: Some(p), flaw: Flaw::KindSince { kind, v, since }, .. })
+                if *p == head && kind == "values_erased" && *v == oldest
+                    && *since == crate::log::ERASURE_SINCE)
+    };
+    let e = crate::export::verify(&dir).err();
+    ensure!(damaged(e.as_ref()), "a verifier refuses it as damage {e:?}");
+    let import = (given.import)(dir, store.lake().clone(), None, Seams::default());
+    let e = import.await.err();
+    ensure!(damaged(e.as_ref()), "an import refuses it as damage: {e:?}");
     Ok(())
 }
 

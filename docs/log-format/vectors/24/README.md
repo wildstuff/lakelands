@@ -1,10 +1,13 @@
 # Log format test vectors
 
 A worked example of `docs/log-format.md`: a lake named `vectors`, as a
-file-based engine stores it, in the one format version a release reads
-and writes. Every line carries that version as `v`, from position 0,
-whose `lake_created` says the same number as its `format`
+file-based engine stores it, in the one format version a release writes.
+Every line carries that version as `v`, from position 0, whose
+`lake_created` says the same number as its `format`
 (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+`carried-up/` is a lake a release reads in two: the same log as `../23/`
+holds it, then the `lease_taken` a writer's open appended in this
+release's format, which is how a format-23 lake is carried up (§6).
 The first eight events are two segments:
 
 | Position | Kind | What it shows |
@@ -296,9 +299,10 @@ blocks stop before its `end`, and checks every line is canonical, each
 segment's digest is taken over its events as restored, the positions run
 from 0 and name their files in 20 digits, the hash chain, every
 checkpoint against the position, the hash and the files before it, and
-that every line is in the one format, `FORMAT` in `verify.py`; it prints
-the last position and hash, or the position where the files stop being
-the log, and exits non-zero there:
+that every line's `v` is a format from `OLDEST` to `FORMAT` in
+`verify.py`, none below an earlier line's (§6, a lake's formats never
+fall); it prints the last position and hash, or the position where the
+files stop being the log, and exits non-zero there:
 
 - a directory with no `log/`, or with no segment file in it, is
   `FAIL <dir>/log holds segment files`;
@@ -313,7 +317,8 @@ export with a checkpoint and a re-key, and over the same export
 damaged, and `crates/lakelands-engine-sqlite/tests/lake_directory.rs`
 over a SQLite lake directory; both fail when `python3` is missing.
 `python3 verify.py .` checks this directory's own two segments the same
-way.
+way, and `python3 verify.py carried-up` the lake a writer carried up, in
+its two formats, to position 8.
 
 **A release's format step.** The step copies this directory to
 `../<N>/` and runs `python3 verify.py --stamp N` in the copy; this
@@ -326,7 +331,10 @@ framed append, whose stored lines it writes again from its restamped
 events and whose breaks it moves to format N, the boxed ingest, the append
 of `apart.json` with its stored lines written again, the blocks lake on
 its own chain, its blocks formed and compressed again with Python's zlib,
-every negative vector, and `FORMAT` in `verify.py`.
+every negative vector including `negative/newer-format`, which it writes
+in format N + 1, `carried-up`, whose events in the oldest format become
+N - 1 and whose carried-up event becomes N, and `OLDEST` and `FORMAT` in
+`verify.py`.
 It then checks what it wrote. No id changes: none is made from `v`. The
 repository's tests hold the result to `LOG_FORMAT_VERSION` and to the
 version `docs/log-format.md` opens with. Called without a number, or
@@ -344,8 +352,17 @@ of position 5 (§1.3):
   `crates/lakelands-store/tests/lake.rs`.
 
 `negative/another-format/log/` writes it in the format before the
-release's, which `--stamp N` makes N - 1:
+release's, which `--stamp N` makes N - 1. That is a format the release
+reads, so it is refused not as out of range but as a fall below the
+event before it, a lake's formats never falling (§6):
 - `python3 verify.py negative/another-format`;
+- `lakelands_core::export::verify`, in `log_vectors.rs`.
+
+`negative/newer-format/log/` writes the whole first segment in the
+format after the release's, which `--stamp N` makes N + 1, one no
+release reads:
+- `python3 verify.py negative/newer-format`, refused at position 0,
+  naming both formats;
 - `lakelands_core::export::verify`, in `log_vectors.rs`.
 
 `negative/torn-between-blocks/log/` is the blocks lake cut at its second

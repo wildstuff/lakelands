@@ -237,9 +237,11 @@ fn corrupt(position: Position, flaw: Flaw) -> Error {
 /// Restore a stored event and verify it: its line and its block are
 /// canonical and restore it (`lakelands_core::log::restore`), the hash is
 /// the hash of the restored event without it, and the members the engine
-/// keeps beside the line agree with it. An event in another format
-/// version than the release's one is refused before anything else of it
-/// is read (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+/// keeps beside the line agree with it. A line in a log format this
+/// release does not read is refused before anything else of it is read;
+/// an event of an older format this release reads, of a lake a writer's
+/// open carried up, is restored as its release wrote it
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 pub fn open(stored: &CanonicalEvent) -> Result<Event> {
     open_with(&mut Restorer::default(), stored)
 }

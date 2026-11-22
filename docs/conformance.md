@@ -1221,6 +1221,7 @@ belongs in the suite, not beside one engine:
 - `an_export_with_values_erased_verifies` — 115: a verifier of an export holding `values_erased` answers it whole
 - `the_report_names_the_sources` — 115: the report names each source that wrote a value of the erased record, and no author
 - `a_values_removed_of_a_record_is_damage` — 115: a `values_removed` whose selection is a record, its hash made right, is refused as damage by a verifier and by an import
+- `a_values_erased_in_the_oldest_format_is_damage` — 115 and 054: a lake of format 23 carrying a `values_erased`, a body format 23 has not, its hashes and `lake_created` made right, is refused by its verification and its import at the erase's position as damage, naming the body and the two formats
 - `an_erase_follows_the_records_keys_back` — 115: an erase by record follows the record backwards through a re-keying and erases the writes made at the key it held before
 - `a_taken_key_ends_the_chain` — 115: a key another record took after a re-keying ends the chain: that record's writes are not selected and still read
 - `a_sys_type_is_not_erased` — 115: a selection of a `sys.` type is refused as `not_found`, as an unknown type is, and the head does not move

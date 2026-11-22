@@ -218,6 +218,13 @@ pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
     ])
 }
 
+/// The log format that brought `values_erased` and a `values_removed` of a
+/// `record` or a `quarantined` selection: the two bodies [`OLDEST_LOG_FORMAT`]
+/// says format 23 lacks. A later format keeps them, so this is a floor of its
+/// own rather than [`LOG_FORMAT_VERSION`], which moves as releases write on
+/// (`docs/log-format.md` §6).
+pub(crate) const ERASURE_SINCE: u32 = 24;
+
 /// Whether this release reads an event written in log format `v`: from
 /// [`OLDEST_LOG_FORMAT`], the format a release kept its promise from, to
 /// the one it writes
@@ -277,13 +284,14 @@ fn padded(b: &str) -> bool {
 /// one of a form a reader without the key refuses (`docs/log-format.md`
 /// §1.4); and a `values_removed` whose selection is a record or a
 /// quarantined row, which only a `values_erased` carries
-/// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+/// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`);
+/// and a `values_erased`, or a `values_removed` of a record or a quarantined
+/// selection, in an event written in a log format earlier than the one that
+/// brought them, 24 ([`OLDEST_LOG_FORMAT`]'s doc, `docs/log-format.md` §6).
 /// No door puts any there; a reader holds the
 /// rule for a log written by something else.
 #[doc(hidden)]
 pub fn misplaced(event: &Event) -> Option<Flaw> {
-    // INTERIM: lakelands#1827 — a body only format 24 has is not yet
-    // refused in an event of format 23.
     if event.context.cause.is_some() {
         return Some(Flaw::CauseInContext);
     }
@@ -299,6 +307,24 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     }
     if event.origin == lakelands_api::record::Origin::Initial {
         return Some(Flaw::InitialOrigin);
+    }
+    if event.v < ERASURE_SINCE {
+        use lakelands_api::write::Selection;
+        let kind = match &event.body {
+            EventBody::ValuesErased { .. } => Some("values_erased"),
+            EventBody::ValuesRemoved {
+                selection: Selection::Record { .. } | Selection::Quarantined(_),
+                ..
+            } => Some("values_removed"),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            return Some(Flaw::KindSince {
+                kind: kind.to_owned(),
+                v: event.v,
+                since: ERASURE_SINCE,
+            });
+        }
     }
     if let EventBody::ValuesRemoved { selection, .. } = &event.body {
         use lakelands_api::write::Selection;
