@@ -2,8 +2,8 @@
 
 `<N>/` holds the test vectors of log format N: a small lake's log, the
 answers `expected.json` and `further.json` say for it, and `verify.py`,
-which reads that format alone and shares no code with Lakelands. Each
-directory's own `README.md` says what it holds.
+which reads every format from 23 to its own and shares no code with
+Lakelands. Each directory's own `README.md` says what it holds.
 
 The promise begins at format 23: nothing of a format before it is kept
 or read. The highest number is the format this tree writes

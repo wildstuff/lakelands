@@ -14,7 +14,9 @@
 //! ```
 //!
 //! A lake never checkpointed exports one file, `00000000000000000000.jsonl`.
-//! Every line is in the release's one format version. The export reads
+//! Every line carries its event's own `v`: the format this release writes,
+//! or, in a lake carried up from an older one, that event's older format.
+//! The export reads
 //! through the head as it stood when it began, a page of the feed at a
 //! time, writing each line as it comes; it writes only into an empty or
 //! absent directory, and a failed export leaves nothing behind.
@@ -34,7 +36,8 @@
 //!
 //! [`verify`] reads only `log/`, a line or a block at a time, each event
 //! restored from its line or its block: canonical lines, consecutive positions, the hash chain from 64 zeros, every checkpoint
-//! against the files before it, one format version this release reads, and
+//! against the files before it, every line in a format this release reads
+//! and none below an event before it (§6: a lake's formats never fall), and
 //! no member a reader of the lake refuses (`crate::log::misplaced`), so an
 //! import refuses it before it writes.
 
@@ -80,7 +83,9 @@ pub struct Manifest {
     pub through: Position,
     /// The hash of the event at `through`.
     pub hash: Digest,
-    /// The one format version its events are written in.
+    /// The format this release writes, which its newest events are in;
+    /// events of a lake it carried up keep the format they were written
+    /// in, below it.
     pub format: u32,
     /// The segment files, in order.
     pub segments: Vec<SegmentFile>,

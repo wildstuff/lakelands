@@ -13,10 +13,14 @@
 //! writes, `LOG_FORMAT_VERSION`, kept in `vectors/<N>/`
 //! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`):
 //! the two segments, then the events of `further.json`, each following the
-//! one before it and each named for what it shows. A format step copies
+//! one before it and each named for what it shows. `carried-up/` is the
+//! same lake as `vectors/23` holds it, then the `lease_taken` a later
+//! release's open appended in its own format: the lake a writer carried
+//! up, which this release reads in both formats. A format step copies
 //! the directory to the next number and stamps the copy
 //! (`verify.py --stamp N`); the directory of every format from 23 on stays
-//! as its tag holds it, and its own `verify.py` is run here.
+//! as its tag holds it, and its own `verify.py`, which reads every format
+//! from the oldest up, is run here.
 
 use std::collections::HashMap;
 use std::fs;
@@ -24,7 +28,9 @@ use std::path::PathBuf;
 
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Flaw, Situation};
-use lakelands_api::event::{ChangeKind, DepthBound, Digest, Event, EventBody, LOG_FORMAT_VERSION};
+use lakelands_api::event::{
+    ChangeKind, DepthBound, Digest, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
+};
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{KeyId, Position};
 use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
@@ -152,12 +158,22 @@ fn the_page_names_the_format_this_release_writes() {
     );
 }
 
-/// The independent reader reads the format this release writes:
-/// `verify.py` holds its one format as `FORMAT = N`, the line its
-/// `--stamp N` rewrites, and N is `LOG_FORMAT_VERSION`.
+/// The independent reader reads every format this release reads:
+/// `verify.py` holds the oldest as `OLDEST = N` and the one it writes as
+/// `FORMAT = N`, the lines its `--stamp N` rewrites, and they are
+/// `OLDEST_LOG_FORMAT` and `LOG_FORMAT_VERSION`.
 #[test]
-fn the_independent_verifier_reads_the_format_this_release_writes() {
+fn the_independent_verifier_reads_the_formats_this_release_reads() {
     let script = fs::read_to_string(vectors().join("verify.py")).unwrap();
+    let oldest = script
+        .lines()
+        .find_map(|l| l.strip_prefix("OLDEST = "))
+        .expect("verify.py holds `OLDEST = N`");
+    assert_eq!(
+        oldest.parse(),
+        Ok(OLDEST_LOG_FORMAT),
+        "verify.py reads from format {oldest}"
+    );
     let named = script
         .lines()
         .find_map(|l| l.strip_prefix("FORMAT = "))
@@ -1497,7 +1513,8 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
 /// position as a format below the one before it: a lake's formats never
 /// fall, though the release reads the older one
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`),
-/// and `verify.py`, which reads the one format, refuses it there too.
+/// and `verify.py`, which reads every format from the oldest up, refuses
+/// it there too.
 #[test]
 fn the_negative_vector_in_another_format_is_refused_at_its_position() {
     let dir = vectors().join("negative/another-format");
@@ -1531,11 +1548,117 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
             panic!("an event in another format is refused at position 6, and it answered {other:?}")
         }
     }
+    let run = std::process::Command::new("python3")
+        .arg(vectors().join("verify.py"))
+        .arg(&dir)
+        .output()
+        .expect("this test runs verify.py over a directory and needs python3");
+    let said = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(1), "{said}");
+    let want = format!(
+        "FAIL position 6: it is written in log format {}, below the format {reads} of an event before it: a lake's formats never fall",
+        reads - 1
+    );
+    assert!(said.lines().any(|l| l == want), "{want}:\n{said}");
+}
+
+/// The mixed vector `carried-up`: the kept format 23 lake, which a
+/// writer's open carried up by appending its first format-24 event
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+/// The release reads both formats, so `export::verify` walks it through
+/// position 8, and `verify.py` checks an archive of a carried-up lake as
+/// it stands instead of refusing its older events.
+#[test]
+fn the_independent_verifier_reads_a_lake_carried_up_from_the_oldest_format() {
+    let dir = vectors().join("carried-up");
+    let mut formats = Vec::new();
+    for name in ["00000000000000000000", "00000000000000000007"] {
+        let text = fs::read_to_string(dir.join("log").join(format!("{name}.jsonl"))).unwrap();
+        formats.extend(text.lines().map(|l| {
+            serde_json::from_str::<Value>(l).unwrap()["v"]
+                .as_u64()
+                .unwrap()
+        }));
+    }
+    let oldest = u64::from(OLDEST_LOG_FORMAT);
+    let reads = u64::from(LOG_FORMAT_VERSION);
+    assert_eq!(
+        formats,
+        [vec![oldest; 8], vec![reads]].concat(),
+        "the lake's formats, position by position"
+    );
+    let checked = lakelands_core::export::verify(&dir)
+        .unwrap_or_else(|e| panic!("the release reads a carried-up lake, and it answered {e:?}"));
+    assert_eq!(checked.from.0, 0);
+    assert_eq!(checked.through.0, 8);
+    let run = std::process::Command::new("python3")
+        .arg(vectors().join("verify.py"))
+        .arg(&dir)
+        .output()
+        .expect("this test runs verify.py over a directory and needs python3");
+    let said = String::from_utf8_lossy(&run.stdout);
+    let trace = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        run.status.success(),
+        "verify.py refused the carried-up lake:\n{said}{trace}"
+    );
+    assert_eq!(trace, "", "a verdict, not a traceback");
+    assert!(
+        said.lines()
+            .any(|l| l.contains(": verified through position 8, hash ")),
+        "verify.py walks the carried-up lake to its head:\n{said}"
+    );
+}
+
+/// The negative vector `negative/newer-format`: the first segment of the
+/// vectors written in the format after this release's, its hash made
+/// right. A release reads from the oldest it names to the one it writes,
+/// so `export::verify` refuses the lake whose `lake_created` names a
+/// format it does not read, and `verify.py` refuses the first line at its
+/// position, naming both numbers.
+#[test]
+fn the_negative_vector_in_a_newer_format_is_refused() {
+    let dir = vectors().join("negative/newer-format");
+    let text = fs::read_to_string(dir.join("log").join(format!("{:020}.jsonl", 0))).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let reads = u64::from(LOG_FORMAT_VERSION);
+    assert!(lines.iter().all(|l| l["v"].as_u64() == Some(reads + 1)));
+    let older = u64::from(OLDEST_LOG_FORMAT);
+    match lakelands_core::export::verify(&dir) {
+        Err(lakelands_api::Error::Unavailable { situation }) => assert!(
+            matches!(
+                &*situation,
+                Situation::LogFormat { found, reads: r, oldest: Some(o), .. }
+                    if *found == reads + 1 && *r == reads && *o == older
+            ),
+            "{situation}"
+        ),
+        other => {
+            panic!(
+                "a lake in a newer format is refused before it is read, and it answered {other:?}"
+            )
+        }
+    }
+    let run = std::process::Command::new("python3")
+        .arg(vectors().join("verify.py"))
+        .arg(&dir)
+        .output()
+        .expect("this test runs verify.py over a directory and needs python3");
+    let said = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(1), "{said}");
+    let want = format!(
+        "FAIL position 0: it is written in log format {}, which this release does not read; it reads {older} to {reads}",
+        reads + 1
+    );
+    assert!(said.lines().any(|l| l == want), "{want}:\n{said}");
 }
 
 /// The vectors are kept for every format from 23 to the one this release
 /// writes, with no gap; and each directory's own `verify.py`, which reads
-/// that format alone, passes over its own log.
+/// every format from the oldest up, passes over its own log.
 /// `scripts/gates/vectors-kept.sh` holds that a shipped one is as its tag
 /// holds it.
 #[test]

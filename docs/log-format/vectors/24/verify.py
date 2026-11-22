@@ -4,14 +4,19 @@
 It shares no code with Lakelands: its own RFC 8785 serialiser (members
 sorted by UTF-16 code units, the ECMAScript number form), SHA-256 and
 zlib from the standard library, and the rules of docs/log-format.md read as text.
-Run it from this directory: `python3 verify.py`. It prints one line per
-check and exits non-zero on the first mismatch.
+Run it from this directory: `python3 verify.py`. It needs Python 3.10 or
+later (`zip(strict=True)`). It prints one line per check and exits
+non-zero on the first mismatch.
 
-A release reads and writes one format version, `FORMAT` below: every
-line of a lake carries it as `v`, from position 0, and `lake_created`
-says the same number as its `format`. A line in any other format, older
-or newer, is refused
-(docs/decisions/054-a-lake-is-written-in-one-format-a-release.md).
+A release reads each log format from `OLDEST` below up to the one it
+writes, `FORMAT`: every line of a lake carries one of them as `v`, from
+position 0, and `lake_created` says the same number as its `format`. A
+line in a format outside that range is refused, and so is one below the
+format of an event before it: a lake's formats never fall
+(docs/decisions/054-a-lake-is-written-in-one-format-a-release.md). A
+lake an older release wrote, which a writer's open carried up, holds its
+older events in the older format and the event that carried it up in
+this one, and is read as it stands.
 
 Given a directory, `python3 verify.py <dir>` checks a lake's log as an
 export or a SQLite lake directory holds it instead, reading only
@@ -23,7 +28,8 @@ refused, positions
 consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
 the hash and the digests of the files before it, over their restored
-events, every line in the one format, `cause`
+events, every line in a format from `OLDEST` to `FORMAT` and none below
+an earlier line's, `cause`
 and `on_behalf_of` never inside `context`, `upstream` only on a
 `record_ingested` event, `sealed` only on a `record_ingested` or an
 `output_recorded` and always with its box on a `record_ingested`,
@@ -153,8 +159,18 @@ def canon(event, refuse):
         refuse(f"the line has no canonical form: {e}")
 
 
-# The one format version; `--stamp N` rewrites this line.
+# The formats this release reads, the oldest and the one it writes;
+# `--stamp N` rewrites these two lines.
+OLDEST = 23
 FORMAT = 24
+
+
+def reads_format(v):
+    """Whether `v` is a format this release reads: the oldest it names up
+    to the one it writes (log-format §6)."""
+    return type(v) is int and OLDEST <= v <= FORMAT
+
+
 ZEROS = "0" * 64
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
@@ -201,12 +217,11 @@ def restored(lines, need, before=None):
         # A line's format is read before anything else in it, a frame
         # line's as an event's: a line of another format is refused for
         # that, under a frame or not (log-format §1.2 and §6).
-        # INTERIM: lakelands#1826 — one format per archive, so the archive
-        # of a lake carried up from format 23 is refused here.
-        need(read.get("v") == FORMAT, f"a line of format {read.get('v')} is not the one format, {FORMAT}")
+        v = read.get("v")
+        need(reads_format(v), f"it is written in log format {v}, which this release does not read; it reads {OLDEST} to {FORMAT}")
         if "events" in read or "frame" in read:
             need(left == 0, "a frame line stands among the lines a frame covers")
-            v, n, members = read.get("v"), read.get("events"), read.get("frame")
+            n, members = read.get("events"), read.get("frame")
             need(set(read) == {"events", "frame", "v"} and type(v) is int
                  and type(n) is int and n >= 1 and isinstance(members, dict)
                  and not any(k in UNFRAMED for k in members)
@@ -214,6 +229,10 @@ def restored(lines, need, before=None):
                  "a frame line holds `events` from 1, `frame` and `v` alone, and its frame no member a frame never holds")
             frame, left = read, n
             continue
+        # A frame line's format is the format of every line it covers
+        # (log-format §1.5): one of another is refused as the frame's.
+        if left:
+            need(v == frame.get("v"), f"a frame of log format {frame.get('v')} covers an event of format {v}: a frame holds its events' format")
         if before is None:
             need("position" in read and "prev" in read, "a segment's first event line holds its `position` and its `prev`")
         event = with_frame(read, frame["frame"] if left else {}, need)
@@ -237,7 +256,7 @@ BREAKS = {
     "framed_twice": "which its frame holds",
     "frame_short": "of a frame's lines still to come",
     "not_a_frame": "a frame line holds `events` from 1",
-    "frame_other": "is not the one format",
+    "frame_other": "a frame holds its events' format",
     "position": "is not the position after",
     "prev_hash": "does not name the hash of the event before it",
     "start_unheld": "a segment's first event line holds its `position` and its `prev`",
@@ -733,7 +752,7 @@ def units(raw, need):
         except ValueError as e:
             need(False, f"the line is JSON ({e})")
         need(canon(head, lambda why: need(False, why)) == line, "the line is canonical")
-        need(head.get("v") == FORMAT, f"a line of format {head.get('v')} is not the one format, {FORMAT}")
+        need(reads_format(head.get("v")), f"it is written in log format {head.get('v')}, which this release does not read; it reads {OLDEST} to {FORMAT}")
         b = head.get("block")
         need(set(head) == {"block", "v"} and isinstance(b, dict) and set(b) == set(BLOCK)
              and all(type(b[k]) is int and b[k] >= 0 for k in ("end", "events", "first", "raw", "stored"))
@@ -774,7 +793,7 @@ def block_events(head, z, need, before):
             need(False, f"a block's line is JSON ({e})")
         need(canon(read, lambda why: need(False, why)) == line, "a block's line is canonical")
         if i == 0 and ("events" in read or "frame" in read):
-            need(set(read) == {"events", "frame", "v"} and read["v"] == FORMAT and read["events"] == b["events"]
+            need(set(read) == {"events", "frame", "v"} and read["v"] == head["v"] and read["events"] == b["events"]
                  and isinstance(read["frame"], dict) and not any(k in UNFRAMED for k in read["frame"]),
                  "a block's frame line holds `events`, the block's, `frame` and `v` alone")
             members = read["frame"]
@@ -829,6 +848,9 @@ def verify_dir(root):
     files = sorted(p for p in log.iterdir() if p.suffix == ".jsonl") if log.is_dir() else []
     check(bool(files), f"{root}/log holds segment files")
     position, prev, known_at = 0, ZEROS, ""
+    # The formats a lake holds never fall: each line's is the floor for
+    # those after it (log-format §6).
+    floor = OLDEST
     sealed = []
     # The fence before (log-format §4).
     fence = 0
@@ -851,6 +873,9 @@ def verify_dir(root):
             digested.update(canonical(event) + b"\n")
             need(event.get("position") == position, f"the line is position {event.get('position')}")
             v = event.get("v")
+            need(reads_format(v), f"it is written in log format {v}, which this release does not read; it reads {OLDEST} to {FORMAT}")
+            need(v >= floor, f"it is written in log format {v}, below the format {floor} of an event before it: a lake's formats never fall")
+            floor = v
             kind = event["body"].get("kind")
             made = event["body"].get("format") if kind == "lake_created" else v
             need(made == v, f"`lake_created` says format {made}, and its line is in format {v}")
@@ -971,6 +996,28 @@ def stamp_blocks(root, n):
     return written
 
 
+def stamp_carried_up(n):
+    """Rewrite `carried-up`, the oldest format's vectors carried up by a
+    writer's open, as the same lake in the next pair of formats: each line
+    in `OLDEST` becomes `n - 1`, the one in `FORMAT` becomes `n`, and the
+    chain, the checkpoint's body and each file's digest are made right."""
+    prev, sealed = ZEROS, []
+    for path in sorted((HERE / "carried-up" / "log").glob("*.jsonl")):
+        lines = []
+        for line in path.read_bytes()[:-1].split(b"\n"):
+            event = json.loads(line.decode("utf-8"))
+            v = event["v"]
+            if v not in (OLDEST, FORMAT):
+                sys.exit(f"FAIL carried-up: an event of format {v}, and --stamp moves {OLDEST} and {FORMAT} alone")
+            if event["body"]["kind"] == "checkpoint":
+                event["body"].update(hash=prev, segments=list(sealed))
+            lines.append(restamp(event, n - 1 if v == OLDEST else n, prev))
+            prev = event["hash"]
+        raw = b"".join(canonical(e) + b"\n" for e in lines)
+        path.write_bytes(raw)
+        sealed.append({"first": lines[0]["position"], "last": lines[-1]["position"], "digest": sha(raw)})
+
+
 def stamp(n):
     """Rewrite the vectors in place as the same lake's log in format `n`.
 
@@ -988,10 +1035,13 @@ def stamp(n):
     `apart.json` after it. The blocks lake is restamped on its own
     chain, its blocks formed and compressed again, and
     `negative/torn-between-blocks` cut from it again. `negative/another-format` is written
-    from the first segment, its last event in format `n - 1`. No id
-    moves: an id is random or made from members that leave `v` out, and
-    `main` recomputes them after this. Last, `FORMAT` in this file's
-    source becomes `n`."""
+    from the first segment, its last event in format `n - 1`, and
+    `negative/newer-format` from it in format `n + 1`. `carried-up`, the
+    oldest format's vectors carried up by a writer's open, is restamped as
+    the same lake: its events in `n - 1`, the one that carried it up in
+    `n`. No id moves: an id is random or made from members that leave `v`
+    out, and `main` recomputes them after this. Last, `OLDEST` and
+    `FORMAT` in this file's source become `n - 1` and `n`."""
     global FORMAT
     events, sealed = stamp_log(HERE, n)
     path = HERE / "further.json"
@@ -1089,7 +1139,20 @@ def stamp(n):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"".join(canonical(e) + b"\n" for e in first[:-1] + [last]))
 
+    # The first segment in the format after this release's, which it does
+    # not read: `negative/newer-format`.
+    newer, prev = [], ZEROS
+    for event in first:
+        newer.append(restamp(json.loads(canonical(event)), n + 1, prev))
+        prev = newer[-1]["hash"]
+    path = HERE / "negative" / "newer-format" / expected["segments"][0]["file"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(canonical(e) + b"\n" for e in newer))
+
+    stamp_carried_up(n)
+
     source = Path(__file__).read_text("utf-8")
+    source = re.sub(r"(?m)^OLDEST = [0-9]+$", f"OLDEST = {n - 1}", source, count=1)
     Path(__file__).write_text(re.sub(r"(?m)^FORMAT = [0-9]+$", f"FORMAT = {n}", source, count=1), "utf-8")
     FORMAT = n
     print(f"ok   stamped in format {n} through position {len(events) - 1}, hash {events[-1]['hash']}")

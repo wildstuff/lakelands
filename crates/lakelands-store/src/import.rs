@@ -10,7 +10,8 @@
 //! **Everything is read before anything is written.** The export is
 //! verified whole (`lakelands_core::export::verify`: canonical lines, consecutive
 //! positions, the hash chain, every checkpoint against the files before
-//! it, the one format, no member where a reader refuses it: an ingest
+//! it, every line in a format this release reads and none below an event
+//! before it, no member where a reader refuses it: an ingest
 //! sealed under another source's key among them), then read once more
 //! for what only an import needs: every event belongs to the lake the
 //! location names, its `id` is of the form `docs/log-format.md` §3 gives
