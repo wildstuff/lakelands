@@ -5,7 +5,7 @@ use crate::conformance::prelude::*;
 
 check!(
     LAKE_24_READ = the_lake_of_format_24_is_read_as_it_answered,
-    "054, 115: the lake v0.24.0 made through its doors (`docs/log-format/lakes/24/`), in format 24, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: its head and the position and kind of every event, every live record of each type it names with its fields, a person whose values an erasure took whole, a person with one field erased, and an invoice whose state-move fields a verb moved, each with its provenance; and a writer that opens it and rebuilds its log answers its records so again",
+    "054, 115: the lake v0.24.0 made through its doors (`docs/log-format/lakes/24/`), in format 24, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: its head and the position and kind of every event, every live record of each type it names with its fields, a person whose values an erasure took whole, a person with one field erased, and an invoice whose state-move fields a verb moved, each with its provenance; a writer's open carries nothing up and leaves every event in format 24; and a rebuild of its log answers its records so again",
     given
 );
 
@@ -21,6 +21,24 @@ async fn the_lake_of_format_24_is_read_as_it_answered(_store: Store, given: Give
     store.verify(None, None).await.must("verifying the lake")?;
     answered(store.as_ref(), &answers, "imported", true).await?;
     let store = writer(store, seams).await.map_err(no)?;
+    let carried = store.upgraded_at_open();
+    ensure!(
+        carried.is_none(),
+        "a writer's open carried the format-24 lake up, from {carried:?}"
+    );
+    let formats: Vec<_> = log_events(store.as_ref())
+        .await?
+        .iter()
+        .map(|e| e.v)
+        .collect();
+    ensure!(
+        formats.iter().all(|v| *v == 24),
+        "after the writer's open, the log is of formats {formats:?}"
+    );
+    store
+        .verify(None, None)
+        .await
+        .must("verifying the lake written to")?;
     store.rebuild().await.must("rebuilding the lake")?;
     answered(store.as_ref(), &answers, "rebuilt", false).await?;
     Ok(())
