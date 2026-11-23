@@ -37,6 +37,7 @@ pub fn cast(lake: &LakeId) -> Vec<Principal> {
         c.owner,
         c.clerk,
         c.architect,
+        c.author,
         c.auditor,
         c.reviewer,
         c.importer,

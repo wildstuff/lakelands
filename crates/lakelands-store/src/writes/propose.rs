@@ -227,7 +227,7 @@ impl Call<'_> {
             // check it, and nothing changes until it is accepted; the
             // proposer needs no `schema` grant (013, extended).
             ProposedWrite::Declare { declarations, plan } => {
-                self.redeclared(&w.ontology, declarations)?;
+                self.redeclared(&w.ontology, declarations, true)?;
                 self.check_bundle(&w.ontology, declarations)?;
                 // Its plan, telling only: what the walk finds is the accept's
                 // to refuse, as before (062).

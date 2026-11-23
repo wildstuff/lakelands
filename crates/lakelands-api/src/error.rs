@@ -620,7 +620,10 @@ impl fmt::Display for Refusal {
             }
             Refusal::Decided => write!(f, "the proposal is already decided"),
             Refusal::Repeated { index } => {
-                write!(f, "the proposal is listed twice, repeating the one at place {index}")
+                write!(
+                    f,
+                    "the proposal is listed twice, repeating the one at place {index}"
+                )
             }
             Refusal::OutOfRange { head } => write!(f, "the lake's log ends at position {head}"),
             Refusal::Unknown(u) => f.write_str(u.message()),

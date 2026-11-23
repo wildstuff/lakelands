@@ -12,7 +12,7 @@ use crate::conformance::prelude::*;
 
 check!(
     AUTHOR_READS = a_declaration_reads_only_what_its_author_may_read,
-    "024 and 028, extended (lakelands#538): a declaration whose author may not know of a field it reads is answered as one that reads a field the type does not have, whatever reads it: a set's `where`, a trigger's `when`, a verb's `requires`, what it sets a field from and the field it sets, a derived field, a field computed by a function, an embedding, a view's `where`, grouping and measure, and a derived relation's pair; by `declare`, `apply`, `add_field`, a migration and a proposal alike; a field the author knows of and may not read is refused as not granted on it, and a verb may set it; a field the type's shape names, as a valid time or a relation's `via`, stands as declared for an author who may not know of it, and a key field it may not know of hides the type from it (lakelands#715); `add_field` adds to its author's view of the type; a write's answer names a trigger or an object set only to one who reads every field its condition names, shown the definition or not, and still says `through`",
+    "024 and 028, extended (lakelands#538): a declaration whose author is not shown a field it reads is refused as not granted on it, naming it, whatever reads it: a set's `where`, a trigger's `when`, a verb's `requires`, what it sets a field from and the field it sets, a derived field, a field computed by a function, an embedding, a view's `where`, grouping and measure, and a derived relation's pair; by `declare`, `apply`, `add_field`, a migration and a proposal alike; alike whether the field is erased from its author's view at `none` or masked, so that the kind of refusal does not say whether it exists (lakelands#1835), while a field the type does not have is answered as one it does not have, and a verb may set the unread field; a field the type's shape names, as a valid time or a relation's `via`, stands as declared for an author who may not know of it, and a key field it may not know of hides the type from it (lakelands#715); `add_field` adds to its author's view of the type; a write's answer names a trigger or an object set only to one who reads every field its condition names, shown the definition or not, and still says `through`",
     embedding
 );
 
@@ -117,8 +117,10 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
         (who.grants.schema, who.grants.review, who.grants.restricted) = (true, true, true);
     }
 
-    // R2: a field its author may not know of answers as one the type does
-    // not have, for every way of reading it; a masked one as not granted.
+    // R2: a field its author is not shown is not granted on it, naming it,
+    // for every way of reading it, alike whether it is erased from the
+    // author's view or masked; a field the type does not have is refused
+    // as that too.
     let mut red = Vec::new();
     let all = ways("b").into_iter().zip(ways("nope")).zip(ways("m"));
     for (((way, hidden), (_, absent)), (_, masked)) in all {
@@ -126,16 +128,11 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
             l.cat.apply(&partial, hidden).await,
             l.cat.apply(&partial, absent).await,
         );
-        // Member for member and word for word, as over `nope`.
-        match (&hidden, &absent) {
-            (Err(h), Err(a)) => {
-                if let Err(f) = alike_renamed(&format!("{way} over `b`"), h, a, ("nope", "b")) {
-                    red.push(f.message);
-                }
-            }
-            _ => red.push(format!(
-                "{way}: over `b` {hidden:?}, over `nope` {absent:?}"
-            )),
+        if !matches!(refused_on(&hidden), Some(("b", Refusal::NotGranted))) {
+            red.push(format!("{way}: over `b` {hidden:?}"));
+        }
+        if reason(&absent).is_none() {
+            red.push(format!("{way}: over `nope` {absent:?}"));
         }
         let masked = l.cat.apply(&partial, masked).await;
         if !matches!(refused_on(&masked), Some(("m", Refusal::NotGranted))) {
@@ -144,13 +141,15 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
     }
     ensure!(
         red.is_empty(),
-        "a declaration over a field its author may not know of is answered as over one the \
-         type does not have, and over one it sees masked as not granted on it; {}",
+        "a declaration over a field its author is not shown is refused as not granted on it, \
+         naming it, whatever reads it, alike whether the field is erased from its view or \
+         masked, and one over a field the type does not have is refused too; {}",
         red.join("; ")
     );
 
-    // The other doors a declaration comes through answer `b` as `nope`
-    // too: `declare`, `add_field`, a migration and a proposal of either.
+    // The other doors a declaration comes through answer `b` as not
+    // granted on it, naming it, and `nope` as a field the type has not:
+    // `declare`, `add_field`, a migration and a proposal of either.
     let (c, account) = (&l.cat, "account".into());
     let mut said = Vec::new();
     for f in ["b", "nope"] {
@@ -178,11 +177,20 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
             why(c.declare(&partial, target).await),
         ]);
     }
+    let on_b = |e: &Option<lakelands_api::Error>| match e {
+        Some(lakelands_api::Error::Refused {
+            field: Some(f),
+            reason: Refusal::NotGranted,
+        }) => f.as_str() == "b",
+        _ => false,
+    };
+    let refused =
+        |e: &Option<lakelands_api::Error>| matches!(e, Some(lakelands_api::Error::Refused { .. }));
     ensure!(
-        alike_each(&said[0], &said[1], ("nope", "b")),
+        said[0].iter().all(on_b) && said[1].iter().all(refused),
         "`declare`, `add_field`, `migrate`, a proposal of a set and of a migration, and a verb \
-         that sets the field answer a field their author may not know of as one the type does \
-         not have; over `b` {:?}, over `nope` {:?}",
+         that sets the field answer a field their author is not shown as not granted on it, \
+         naming it, and a field the type has not as refused; over `b` {:?}, over `nope` {:?}",
         said[0],
         said[1]
     );

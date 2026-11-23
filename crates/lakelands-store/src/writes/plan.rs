@@ -206,7 +206,8 @@ impl Call<'_> {
     fn made(&self, plan: impl FnOnce(&Self, &mut Writer) -> Result<Planned>) -> Result<Outcome> {
         check_context(self.lake, &self.context, self.who)?;
         let mut w = self.writer()?;
-        let planned = plan(self, &mut w)?;
+        let planned = plan(self, &mut w);
+        let planned = planned?;
         let from = head(&w).next();
         let Planned {
             plan,
@@ -263,7 +264,8 @@ impl Call<'_> {
         granted(sees.authors())?;
         match change {
             Changed::Declare { mut declarations } => {
-                self.redeclared(&w.ontology, &mut declarations)?;
+                let e = self.redeclared(&w.ontology, &mut declarations, true);
+                e?;
                 self.check_bundle(&w.ontology, &declarations)?;
                 let sent = declarations.clone();
                 declarations.retain(|d| !w.ontology.in_force(d));
@@ -307,7 +309,8 @@ impl Call<'_> {
         when: When,
         against: Against<'_>,
     ) -> Result<Planned> {
-        self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
+        let e = self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration), true);
+        e?;
         // One who reads every field was judged against the lake itself.
         if !Sight::held(self.who, &w.ontology).reads_all_fields() {
             declare::check_declaration(&w.ontology, &declaration, false)?;

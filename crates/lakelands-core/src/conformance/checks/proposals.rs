@@ -643,7 +643,13 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
     for (who, list, at, want, why) in [
         (own, l2([f, s]), 1, None, "an upsert a sibling moved"),
         (own, l2([f, d]), 1, no(Decided), "a decided proposal"),
-        (own, l2([f, f]), 1, no(Repeated { index: 0 }), "a proposal listed twice"),
+        (
+            own,
+            l2([f, f]),
+            1,
+            no(Repeated { index: 0 }),
+            "a proposal listed twice",
+        ),
         (
             own,
             l3([f, w, f]),
@@ -660,7 +666,13 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
             changed,
             "a pinned proposal on a type a sibling redeclared",
         ),
-        (&narrow, l2([w, &away]), 1, no(NotGranted), "one listed in part"),
+        (
+            &narrow,
+            l2([w, &away]),
+            1,
+            no(NotGranted),
+            "one listed in part",
+        ),
         (
             own,
             l2([&declares, &declares_again]),

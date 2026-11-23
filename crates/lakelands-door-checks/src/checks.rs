@@ -510,6 +510,9 @@ pub struct Cast {
     /// Writes the lake's settings, reads `status` of invoices, and reads a
     /// `longest`, which a check may declare.
     pub tuner: Principal,
+    /// Declares with `schema`, writes anything, and is shown no `amount`:
+    /// the author of a declaration, judged as it is shown the lake.
+    pub author: Principal,
 }
 
 impl Cast {
@@ -557,6 +560,9 @@ impl Cast {
             schema: true,
             ..clerk.clone()
         };
+        let mut author = invoice_grants(Access::Write, &[("amount", Access::None)]);
+        author.schema = true;
+        author.restricted = true;
         let mut tuner = invoice_grants(Access::None, &[("status", Access::Read)]);
         for (name, access) in [("sys.setting", Access::Write), ("longest", Access::Read)] {
             let grants = TypeGrants {
@@ -605,6 +611,7 @@ impl Cast {
                 ),
             ),
             tuner: principal(lake, PrincipalKind::Agent, "tuner", tuner),
+            author: principal(lake, PrincipalKind::Agent, "author", author),
         }
     }
 }
@@ -680,7 +687,7 @@ fn applied(o: &Outcome) -> (Position, Option<Version>) {
 }
 
 /// Whether an error is the answer for a field the type does not declare,
-/// naming `name`: also the answer for one the principal may not know of.
+/// naming `name`.
 fn no_field(e: &Error, name: &str) -> bool {
     matches!(refusal(e), (Some(f), Refusal::Invalid(said))
         if f.as_str() == name
@@ -6362,7 +6369,7 @@ pub async fn a_proposal_shows_its_reader_the_values_it_may_read(store: Arc<dyn L
 /// read: a trigger over `note`, which the clerk sees masked, or over
 /// `secret`, which the keeper writes and never reads, is refused as not
 /// granted on the field, and one over `secret` by the clerk, who may not
-/// know of it, as over a field the type does not have
+/// know of it, as not granted on it too, naming it
 /// (`docs/decisions/013-verbs-run-by-declared-risk.md` and
 /// `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 /// extended).
@@ -6427,8 +6434,8 @@ pub async fn a_proposal_names_what_its_reader_may_know_and_says_there_is_more(
     assert_eq!(absent, want("nope"));
     assert_eq!(
         hidden,
-        want("secret"),
-        "a field its proposer may not know of answers as one the type does not have"
+        Error::refused(Some("secret".into()), Refusal::NotGranted),
+        "a field its proposer may not know of is not granted, naming it"
     );
     // Per reader: the names its listing shows by kind, and each `more`.
     let declared = || ProposalFilter {
@@ -8093,12 +8100,10 @@ pub async fn apply_dry_run_answers_as_apply_and_appends_nothing(store: Arc<dyn L
         "apply appends the set the dry run admitted"
     );
     // Judged as its author is shown the lake: `amount`, which it may not
-    // know of, answers as a field `invoice` does not have, as `apply`
-    // answers it, so the dry run tells it nothing more.
-    let grants = json!({"default": "write", "schema": true, "restricted": true,
-        "types": {INVOICE: {"fields": {"amount": "none"}}}});
-    let grants = serde_json::from_value(grants).unwrap();
-    let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
+    // know of, is refused as not granted on it, naming it, as `apply`
+    // refuses it, so the dry run tells it nothing more; a misspelt field
+    // is an unknown one and is answered as `apply` answers it (lakelands#1835).
+    let author = &cast.author;
     let before = shown().await;
     let probe = |requires: &str| {
         let v = json!({"declare": "verb", "name": "probe", "on": INVOICE, "risk": "low",
@@ -8121,15 +8126,20 @@ pub async fn apply_dry_run_answers_as_apply_and_appends_nothing(store: Arc<dyn L
         applied,
         "a hidden field is refused as apply refuses it"
     );
-    let ghost = catalog
-        .apply_dry_run(author, probe("amuont > 3"))
+    let misspelt = probe("amuont > 3");
+    let hidden = catalog
+        .apply_dry_run(author, misspelt.clone())
         .await
         .unwrap_err();
-    let ghost = format!("{ghost:?}").replace("amuont", "amount");
+    let applied = catalog.apply(author, misspelt).await.unwrap_err();
     assert_eq!(
-        ghost,
-        format!("{applied:?}"),
-        "a hidden field answers as one never declared"
+        hidden, applied,
+        "a misspelt field is refused as apply refuses it"
+    );
+    assert!(
+        matches!(refusal(&hidden), (None, Refusal::Invalid(said))
+            if matches!(&said.case, Case::UnknownField { field, .. } if field.as_str() == "amuont")),
+        "a misspelt field answers as one the type does not have: {hidden:?}"
     );
 }
 
