@@ -2363,6 +2363,20 @@ hold, not what hosts implement:
   `checkpoint`, `compact`; the export, below, is a function over it), restriction (`restrict`, `unrestrict`), `age` (above,
   under `SystemVocabulary`), and `purge_source` (below).
 
+**An idempotency key belongs to its writer.** The id of an authored
+write is derived from the writer's name and the key, so one key from one
+writer is one write in the whole lake: a retry under the same key
+answers the first write's outcome and appends nothing. The writer's name
+is `<kind>:<id>` (`Principal::writer`), and a host that renames a writer
+— changes its kind or its id — ends that key's reach: the same key under
+the new name derives another id and is a second write, not a recognised
+retry. A host drains the retries it may still send under a writer's name
+before it renames the writer. The lake offers no other way to learn that
+a try under the old name landed: the only "is this applied" read is an
+engine trait's (`ProjectionView::applied`), not a host's door, and no
+function of the caller's contract derives the id an earlier writer made
+(`docs/decisions/118-a-rename-ends-an-idempotency-keys-reach.md`).
+
 `describe` and `describe_type` answer the ontology in force at the read
 position, as the principal may see it, each declaration whole (suite:
 `describe_answers_the_declaration_whole`; door check of the same name):
