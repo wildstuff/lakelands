@@ -1753,6 +1753,7 @@ interface types {
         too-large(u32),
         migration(migration-report),
         decided,
+        repeated(u64),
         unanswered(said),
         declined(said),
         out-of-range(position),

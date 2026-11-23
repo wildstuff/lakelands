@@ -88,6 +88,24 @@ fn errors_are_a_closed_tagged_set_with_a_sentence_for_people() {
 }
 
 #[test]
+fn a_repeated_proposal_names_the_place_it_repeats() {
+    let e = Error::Refused {
+        field: None,
+        reason: Refusal::Repeated { index: 2 },
+    };
+    assert_eq!(
+        serde_json::to_value(&e).unwrap(),
+        json!({"error": "refused",
+            "reason": {"index": 2, "refusal": "repeated"},
+            "message": "refused: the proposal is listed twice, repeating the one at place 2"})
+    );
+    assert_eq!(
+        e.to_string(),
+        "refused: the proposal is listed twice, repeating the one at place 2"
+    );
+}
+
+#[test]
 fn the_named_graph_reads_are_patterns() {
     let n = Pattern::neighbors("invoice".into(), "INV-1".into(), "debtor".into(), Walk::Out);
     assert_eq!(n.steps.len(), 1);
