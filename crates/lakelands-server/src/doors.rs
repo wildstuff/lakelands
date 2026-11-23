@@ -668,6 +668,23 @@ pub(crate) async fn run(
                 None => to_json(&c.describe(who, d.at).await?),
             }
         }
+        Door::VectorCoverage { ty } => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct D {}
+            let _: D = args(label, &a)?;
+            to_json(&c.vector_coverage(who, ty).await?)
+        }
+        Door::PurgePreflight { source } => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct P {
+                #[serde(default, rename = "type")]
+                ty: Option<TypeName>,
+            }
+            let p: P = args(label, &a)?;
+            to_json(&c.purge_preflight(who, source, p.ty.as_ref()).await?)
+        }
         Door::Pin => {
             let tool = label.into();
             return Err(Fault::arguments(Case::NoSessionToPin { tool }));

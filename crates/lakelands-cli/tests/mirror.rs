@@ -451,19 +451,9 @@ impl Drop for Two {
             .into_iter()
             .filter_map(schema)
             .collect();
-        if schemas.is_empty() {
-            return;
-        }
         // On a thread of its own: the synchronous client runs a runtime of
         // its own, which a test's runtime thread cannot.
-        let _ = std::thread::spawn(move || {
-            for (url, schema) in schemas {
-                if let Ok(mut client) = postgres::Client::connect(&url, postgres::NoTls) {
-                    let _ = client.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"));
-                }
-            }
-        })
-        .join();
+        lakelands_test_pg::drop_all_off_thread(schemas);
     }
 }
 

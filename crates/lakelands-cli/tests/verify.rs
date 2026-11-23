@@ -236,12 +236,7 @@ impl Drop for Root {
             let _ = block_on(store.close());
         }
         if let Some((url, schema)) = self.pg.clone() {
-            let _ = std::thread::spawn(move || {
-                if let Ok(mut client) = postgres::Client::connect(&url, postgres::NoTls) {
-                    let _ = client.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"));
-                }
-            })
-            .join();
+            lakelands_test_pg::drop_all_off_thread(vec![(url, schema)]);
         }
     }
 }

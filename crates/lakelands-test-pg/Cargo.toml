@@ -1,0 +1,15 @@
+[package]
+name = "lakelands-test-pg"
+description = "The teardown of the schemas a PostgreSQL test makes: a drop retried while a reader still holds the schema."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+postgres = "0.19"
+
+[lints]
+workspace = true

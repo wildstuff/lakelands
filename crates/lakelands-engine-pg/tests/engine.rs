@@ -462,7 +462,7 @@ fn a_location_without_a_schema_puts_the_lake_in_lakelands_and_its_name() {
     );
     assert_eq!(rows.len(), 1, "the server holds the schema `{expected}`");
     // Only this test's schema: the other tests' lakes are still open.
-    admin(&url, &format!("DROP SCHEMA \"{expected}\" CASCADE"));
+    common::drop_schema(&url, &expected);
 }
 
 /// A compact is `VACUUM (ANALYZE)` of the projection's tables, run outside

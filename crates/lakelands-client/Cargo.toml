@@ -31,7 +31,7 @@ lakelands-engine-pg.workspace = true
 lakelands-engine-sqlite.workspace = true
 lakelands-server = { path = "../lakelands-server" }
 lakelands-store.workspace = true
-postgres = "0.19"
+lakelands-test-pg.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "test-util"] }
 
 [lints]

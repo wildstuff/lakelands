@@ -17,17 +17,18 @@
 //! `proposals`, `accept`, `reject`, `declare_type`, `add_field`, `recompute`,
 //! `migrate`, `thin`, each only if the principal may use it, and the MCP session's
 //! doors: `pin`, for `as_of` across a turn, and `subscribe` and `unsubscribe`,
-//! for being told of changes. A 20-type lake offers about 80 tools.
+//! for being told of changes. How many tools a lake offers follows the
+//! types, relations and verbs the principal may use; this module keeps no
+//! count of them.
 //!
-//! Five doors of [`Catalog`](crate::Catalog) have no tool of their own:
-//! `describe_type` is `describe` with a `type`, `migrate_apply` is
-//! `migrate` with a `report_id`, `ingest` is deliberately not a tool — a
-//! source feeds a lake through a stream, not through a model — neither
-//! is `apply` in `0.1.0`: a bundle is applied by its author's tooling, and
-//! a model declares one declaration at a time — and neither is
-//! `accept_many`: accepting several proposals as one is a reviewer's act
-//! at the host, served over REST
-//! (`docs/decisions/117-several-proposals-are-accepted-as-one.md`).
+//! Not every door of [`Catalog`](crate::Catalog) is a tool: some are
+//! another door's tool with an argument, some answer a source's or a
+//! host's question rather than a model's, and some are served over REST
+//! only. Which doors those are, and which tool asks the same question
+//! where one does, is the roster of
+//! `docs/decisions/014-four-doors-per-type-one-name-generator.md` and
+//! `docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`;
+//! this module enumerates none of them and keeps no count.
 
 use std::collections::BTreeMap;
 
@@ -36,7 +37,7 @@ use serde_json::{Map, Value, json};
 
 use crate::describe::{FieldDescription, LakeDescription, TypeDescription, VerbDescription};
 use crate::error::{catalog, closed};
-use crate::id::{RelationName, TypeName, VerbName};
+use crate::id::{RelationName, SourceId, TypeName, VerbName};
 use crate::key::LINK_PREFIX;
 use crate::ontology::{FieldType, StorageKind};
 
@@ -157,6 +158,23 @@ crate::tagged_enum! {
         /// `enact`: a change made against its plan. Served over REST only, as
         /// `plan` is.
         Enact,
+        /// `vector_coverage`: what a type's embedding fields hold. Served
+        /// over REST only; no tool asks it, as coverage is the host's
+        /// operational question
+        /// (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
+        VectorCoverage {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+        },
+        /// `purge_preflight`: what a purge from one source would take,
+        /// optionally under one type. Served over REST only; no tool asks it,
+        /// as a preflight is a purge's own question
+        /// (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
+        PurgePreflight {
+            /// The source.
+            source: SourceId,
+        },
     }
 }
 

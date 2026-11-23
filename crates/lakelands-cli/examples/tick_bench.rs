@@ -767,9 +767,7 @@ fn drop_lake(pg: Option<(&str, bool)>, schema: Option<String>, root: &Path) {
         && let Some(s) = schema
     {
         tokio::task::block_in_place(|| {
-            if let Ok(mut cl) = postgres::Client::connect(url, postgres::NoTls) {
-                let _ = cl.batch_execute(&format!("DROP SCHEMA IF EXISTS {s} CASCADE"));
-            }
+            lakelands_test_pg::drop_all_off_thread(vec![(url.to_owned(), s)]);
         });
     }
     let _ = std::fs::remove_dir_all(root);

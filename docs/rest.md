@@ -128,6 +128,7 @@ key may hold any character.
 |---|---|---|
 | `GET …/types/<type>/records` | find | query: `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `retired`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at` |
 | `GET …/types/<type>/records/<key>` | get | query: `with_meta`, `params`, `as_of`, `valid_at` |
+| `GET …/types/<type>/coverage` | vector coverage of one type, as the caller is answered it: the embedding fields it reads and, for each, how many are embedded and due | — |
 | `PUT …/types/<type>/records/<key>` | upsert | body: the fields to change; `If-Match`, `If-None-Match`, `Idempotency-Key` |
 | `DELETE …/types/<type>/records/<key>` | retire | `If-Match`, `Idempotency-Key` |
 | `PUT …/types/<type>/records/<key>/links/<relation>/<to>` | link | body: the link's own fields (none is `{}` or no body); `If-Match`, `If-None-Match`, `Idempotency-Key` |
@@ -139,6 +140,7 @@ key may hold any character.
 | `POST …/search` | search | body: the search tool's arguments; `text_as_of: true` with `as_of` and `where` ranks the text the records held at `as_of` |
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
+| `GET …/purge/<source>` | a purge's preflight, asked as a write is judged: what the purge would take and what it would strand, changing nothing | query: `type` (optional) |
 | `GET …/quarantined` | quarantined records | query: `source`, `type`, `delivery`, `index`, `state` (`open` or `closed`), `limit`, `after` (an id, as JSON) |
 | `POST …/quarantined/dismiss` | dismiss a quarantined record | body: the id, `source`, `delivery`, `index` |
 | `POST …/quarantined` | quarantine a record the host refused | body: `source`, `opts` (as an ingest's: `delivery`, `sealed_apart`, `run`), `refused` (`record`, `cause`, `reason`) |
