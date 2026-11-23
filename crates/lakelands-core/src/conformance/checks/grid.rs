@@ -543,6 +543,13 @@ const DECLARING: [Door; 8] = [
     Plan,
 ];
 
+/// The one declaring door on the blind field that sends nothing: only
+/// `DeclareNamed` names no set of its own, so it is skipped for each of
+/// `READERS`' three authored readers. The other seven answer, and the row
+/// asserts their refusal; this count keeps a door from silently stopping
+/// being asked.
+const BLIND_UNASKED: usize = 3;
+
 const DOORS: [Door; 20] = [
     Get,
     AsOf,
@@ -1509,8 +1516,8 @@ fn reader(
 async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) -> Held {
     let lake = store.lake().clone();
     let mut own = Some(store);
-    let (mut red, mut blind, mut alike, mut controls, mut unasked) =
-        (Vec::new(), Vec::new(), 0, 0, 0);
+    let (mut red, mut blind, mut alike, mut controls, mut unasked, mut blind_unasked) =
+        (Vec::new(), Vec::new(), 0, 0, 0, 0);
     let pairs = (HIDDEN.iter()).flat_map(|&h| [(h, false), (h, true)]);
     let values_only = |h| matches!(h, Secret | Since | Shape | Acts | Beside | Blind);
     for (hidden, gone) in pairs.filter(|&(h, gone)| !(gone && values_only(h))) {
@@ -1558,6 +1565,9 @@ async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) ->
                     let pair = (hidden, gone);
                     let Some(mut x) = door.ask(a.as_ref(), &who, target, at, pair, false).await
                     else {
+                        if hidden == Blind && authored && DECLARING.contains(&door) {
+                            blind_unasked += 1;
+                        }
                         unasked += 1;
                         continue;
                     };
@@ -1635,9 +1645,14 @@ async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) ->
         .map(|(cell, at)| format!("{cell}: {at}"))
         .collect();
     ensure!(
-        new.is_empty() && held.is_empty() && blind.is_empty() && controls == CONTROLS,
+        new.is_empty()
+            && held.is_empty()
+            && blind.is_empty()
+            && controls == CONTROLS
+            && blind_unasked == BLIND_UNASKED,
         "the rights grid: {alike} cells alike, {} red, {controls} controls \
-         differ (the description says {CONTROLS}), {unasked} asked nothing; red and not known:\n{}\n\
+         differ (the description says {CONTROLS}), {unasked} asked nothing, \
+         {blind_unasked} of them on the blind field (not {BLIND_UNASKED}); red and not known:\n{}\n\
          known and holding now, to be removed:\n{}\ncontrols alike, a twin that hides nothing there:\n{}",
         red.len(),
         new.join("\n"),

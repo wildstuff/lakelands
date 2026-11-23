@@ -106,13 +106,15 @@ impl Call<'_> {
     }
 
     /// A declaration reads only what its author may read (024 and 028,
-    /// extended). The set is checked against the ontology as its author is
-    /// shown it: a field the author is not shown is a field the type does
-    /// not have, answered as invalid, as a misspelt one is. A field shown
-    /// but not readable is refused as not granted, naming it, before
-    /// anything reads its value. Before both, a declaration under a name,
-    /// or with a tool's name, that what its author is not shown holds is
-    /// not granted.
+    /// extended). A field a declaration reads that its author is not shown
+    /// is refused as not granted, naming it, alike whether the view erases
+    /// the field or a `sensitive` flag masks it, so the kind of refusal
+    /// does not say whether the field exists (lakelands#1835). The probes
+    /// are read before the set, which would answer an erased field as one
+    /// the type does not declare. A field shown but not readable is refused
+    /// the same way, before anything reads its value. Before both, a
+    /// declaration under a name, or with a tool's name, that what its
+    /// author is not shown holds is not granted.
     fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
         let sees = Sight::held(self.who, o);
         // A constraint under the name of one its author is not told, as
