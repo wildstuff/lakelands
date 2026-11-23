@@ -681,7 +681,6 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
             "a redeclared type",
         ),
     ] {
-        let list = list;
         let before = store.head().await.must("reading the head")?;
         let err = cat.accept_many(who, &list).await.must_fail(why)?;
         head_unmoved(store.as_ref(), before, why).await?;

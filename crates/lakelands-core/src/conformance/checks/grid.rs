@@ -1611,7 +1611,7 @@ async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) ->
                         (true, false) => controls += 1,
                         (false, true) => alike += 1,
                         (false, false) => {
-                            let at = parted(&x, &y, "".into()).unwrap_or_default();
+                            let at = parted(&x, &y, "").unwrap_or_default();
                             red.push((cell, at))
                         }
                     }
