@@ -34,8 +34,8 @@ a principal, and each appends nothing.**
   the next release, as 034 says.
 - Neither has a tool. Coverage is an operator's gauge of the embedding
   backlog, and a purge is a source's take-back, which a host decides.
-  Neither is a model's question. The doors of the `Catalog` with no tool
-  become nine (014, amended).
+  Neither is a model's question. `vector_coverage` and `purge_preflight`
+  join the doors of the `Catalog` with no tool (014, amended).
 - The `LakeStore` forms stay, unchanged, as the host's own lane. Their
   docs point to the principal's door.
 

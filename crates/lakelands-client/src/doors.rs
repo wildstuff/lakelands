@@ -28,12 +28,12 @@ use lakelands_api::quarantine::{
 };
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search, StatementAnswer};
 use lakelands_api::read::{CONTEXT_HEADER, PRINCIPAL_HEADER};
-use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
+use lakelands_api::read::{Find, Found, Get, ReadAt, Reply, VectorCoverage};
 use lakelands_api::record::{Patch, Record};
 use lakelands_api::write::{
     Change, Committed, Declaration, IngestOpts, Migration, MigrationReport, Outcome, Plan,
-    Proposal, ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport,
-    WriteOpts,
+    Proposal, ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeMigration,
+    ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{Catalog, Params, WriteContext};
 use serde_json::{Value, json};
@@ -313,6 +313,32 @@ impl Catalog for RemoteCatalog {
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
         let call =
             Call::new(Method::GET, record(ty, &get.key)?).query(query_of(&members(&get, &["key"])));
+        self.go(who, call).await
+    }
+
+    async fn vector_coverage(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+    ) -> Result<Reply<Vec<VectorCoverage>>> {
+        let call = Call::new(
+            Method::GET,
+            format!("types/{}/coverage", seg(ty.as_str(), Segment::Type)?),
+        );
+        self.go(who, call).await
+    }
+
+    async fn purge_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<PurgeReport> {
+        let call = Call::new(
+            Method::GET,
+            format!("purge/{}", seg(source.as_str(), Segment::Source)?),
+        )
+        .query(query_of(&json!({"type": ty})));
         self.go(who, call).await
     }
 

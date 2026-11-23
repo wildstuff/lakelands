@@ -54,8 +54,8 @@ nothing whatever it answers.**
   adds no name there, so the `single-catalog` gate and every model's tool
   list are unchanged. A preview before an import and a check of a rule
   not yet declared are a host's or an operator's questions, asked with
-  what the host already holds; they are not a model's. The doors of the
-  `Catalog` with no tool of their own become seven (014, amended).
+  what the host already holds; they are not a model's. `judge` joins the
+  doors of the `Catalog` with no tool of their own (014, amended).
 - One type per call, named once as `find` names it: every key and every
   candidate judged is of `ty`. There is no cross-type rule in the
   contract, so a call that mixed types could answer no rule of either.
