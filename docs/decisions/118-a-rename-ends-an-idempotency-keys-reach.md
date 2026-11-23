@@ -34,12 +34,17 @@ built, and the reach of a key ends where its writer's name changes.
 - A host drains the retries it may still send under a writer's name
   before it renames the writer. Once the rename is in place, a key it
   sends under the new name is a new key.
-- The lake offers no other way to learn that a try under the old name
-  landed: the only "is this applied" read is an engine trait's
-  (`ProjectionView::applied`), not a host's door, and no function of the
-  caller's contract derives the id an earlier writer made. A host that
-  has not drained the retries cannot tell a second write from a retry
-  after a rename.
+- The lake does not answer for the earlier try by itself: the only
+  "is this applied" read is an engine trait's (`ProjectionView::applied`),
+  not a host's door, and no function of the caller's contract derives the
+  id an earlier writer made. Nothing in the lake makes a retry under the
+  new name a recognised retry — it appends a second write.
+- A host that kept a position from before the try can see the landing on
+  its own change feed (`LakeStore::feed`): the events carry the writer and
+  the idempotency key, so it can tell the write under the old name from
+  the one under the new. That check is the host's to make, over its whole
+  feed; the store does not answer it by key, which is why the host drains
+  its retries before it renames a writer.
 
 ## Why
 

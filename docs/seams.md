@@ -2371,10 +2371,15 @@ is `<kind>:<id>` (`Principal::writer`), and a host that renames a writer
 — changes its kind or its id — ends that key's reach: the same key under
 the new name derives another id and is a second write, not a recognised
 retry. A host drains the retries it may still send under a writer's name
-before it renames the writer. The lake offers no other way to learn that
-a try under the old name landed: the only "is this applied" read is an
-engine trait's (`ProjectionView::applied`), not a host's door, and no
-function of the caller's contract derives the id an earlier writer made
+before it renames the writer. The lake does not answer for the earlier
+try by itself: the only "is this applied" read is an engine trait's
+(`ProjectionView::applied`), not a host's door, and no function of the
+caller's contract derives the id an earlier writer made. A host that
+kept a position from before the try can see the landing on its own
+change feed (`LakeStore::feed`), whose events carry the writer and the
+idempotency key, and can tell it from the write under the new name;
+that check is the host's to make, and nothing makes the retry under the
+new name a recognised retry
 (`docs/decisions/118-a-rename-ends-an-idempotency-keys-reach.md`).
 
 `describe` and `describe_type` answer the ontology in force at the read
