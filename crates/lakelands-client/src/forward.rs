@@ -23,8 +23,11 @@
 //!   `unrestrict`, `checkpoint`, `age`, `purge_source`, the forgettings,
 //!   `remove_values`, `compact`) are `ReadOnly`, the lease another's,
 //!   whatever they would have done: they are run where the writer is.
-//!   The others, the preflights among them, and the feed are the local
-//!   handle's, once it has folded the handle's own writes.
+//!   The others, the host preflights among them, and the feed are the
+//!   local handle's, once it has folded the handle's own writes. The
+//!   catalog's principal-asked `purge_preflight` is a write's question, so
+//!   it goes to the writer as a write does
+//!   (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
 
 use std::cell::Cell;
 use std::fmt;
@@ -314,6 +317,23 @@ impl Catalog for ForwardingCatalog {
 
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
         self.read().await?.get(who, ty, get).await
+    }
+
+    async fn vector_coverage(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+    ) -> Result<Reply<Vec<VectorCoverage>>> {
+        self.read().await?.vector_coverage(who, ty).await
+    }
+
+    async fn purge_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<PurgeReport> {
+        forward!(self, c => c.purge_preflight(who, source, ty);)
     }
 
     async fn upsert(

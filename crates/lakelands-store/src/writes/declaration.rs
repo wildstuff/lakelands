@@ -106,13 +106,15 @@ impl Call<'_> {
     }
 
     /// A declaration reads only what its author may read (024 and 028,
-    /// extended). The set is checked as sent against the ontology as its
-    /// author is shown it, so a field the author may not know of answers as
-    /// one the type does not have, whatever reads it. Then a field it knows
-    /// of and may not read is refused as not granted, where what its author
-    /// adds or changes reads its value. Before either, a declaration under
-    /// a name, or with a tool's name, that what its author is not shown
-    /// holds is not granted.
+    /// extended). A field a declaration reads that its author is not shown
+    /// is refused as not granted, naming it, alike whether the view erases
+    /// the field or a `sensitive` flag masks it, so the kind of refusal
+    /// does not say whether the field exists (lakelands#1835). The probes
+    /// are read before the set, which would answer an erased field as one
+    /// the type does not declare. A field shown but not readable is refused
+    /// the same way, before anything reads its value. Before both, a
+    /// declaration under a name, or with a tool's name, that what its
+    /// author is not shown holds is not granted.
     fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
         let sees = Sight::held(self.who, o);
         // A constraint under the name of one its author is not told, as
@@ -256,40 +258,84 @@ impl Call<'_> {
                 }
             }
         }
+        // A field a declaration reads that the lake holds but its author is
+        // not shown is not granted naming it — alike whether the field is
+        // erased from its view or a `sensitive` flag raises it to masked,
+        // so that the kind of refusal does not say whether the field exists
+        // (lakelands#1835). So the probes are read before the set, which
+        // would answer an erased field as one the type does not declare.
+        let mut probes: Vec<(&TypeDecl, Vec<FieldName>)> = Vec::new();
+        {
+            let mut after = o.clone();
+            sent.iter().for_each(|d| after.put(d.clone(), 0, None));
+            for d in sent {
+                // Only what its author adds or changes: of a type, the fields,
+                // the relations and the view that do not stand as they are.
+                let key = lakelands_core::engines::declaration_key;
+                let mut was = declared.iter().map(|b| &b.declaration);
+                let (was, mut new) = (was.find(|b| key(b) == key(d)), d.clone());
+                match (&mut new, was) {
+                    (Declaration::Type(t), Some(Declaration::Type(w))) => {
+                        *t = after.ty(&t.name)?.clone();
+                        t.fields.retain(|f| !w.fields.contains(f));
+                        t.relations.retain(|r| !w.relations.contains(r));
+                        t.view = t.view.take().filter(|v| Some(v) != w.view.as_ref());
+                    }
+                    (_, Some(w)) if w == d => continue,
+                    _ => {}
+                }
+                let named = describe::probed_types(&new);
+                for t in named.iter().filter_map(|n| o.ty(n).ok()) {
+                    // A type its author is not shown is one not declared
+                    // (024): `set`, after, answers it, and its fields are not
+                    // probed here.
+                    if seen.ty(&t.name).is_err() {
+                        continue;
+                    }
+                    let sets = |n: &str| after.set(n).map(|s| s.filter.clone());
+                    let mut names = describe::declaration_probes(&new, &t.name, &sets);
+                    // A function's inputs and what an embedding is made from.
+                    if let Declaration::Type(x) = &new
+                        && x.name == t.name
+                    {
+                        let read = |f| crate::backed::computed_reads(&after, f);
+                        names.extend(x.fields.iter().filter_map(read).flatten());
+                    }
+                    // A verb sets the fields it writes rather than reading
+                    // them: one its author may not know of is not granted,
+                    // naming it, while one shown but masked may be set, so
+                    // the set fields are checked here and not probed below.
+                    if let Declaration::Verb(v) = &new
+                        && v.on == t.name
+                        && let VerbEffect::Write { set } = &v.effect
+                    {
+                        for a in set {
+                            let f = t.field(&a.field);
+                            if f.is_some_and(|f| {
+                                sees.field_access(t, f) == lakelands_api::Access::None
+                            }) {
+                                return Err(Error::refused(
+                                    Some(a.field.clone()),
+                                    Refusal::NotGranted,
+                                ));
+                            }
+                        }
+                    }
+                    let has = |n: &&FieldName| t.has_field(n);
+                    let names: Vec<FieldName> = names.iter().filter(has).cloned().collect();
+                    if let Some(n) = names.iter().find(|n| !sees.reads(&t.name, n)) {
+                        return Err(Error::refused(Some(n.clone()), Refusal::NotGranted));
+                    }
+                    probes.push((t, names));
+                }
+            }
+        }
         // A migration's shape is refused as a declaration; its preflight is next.
         set(&seen, &shaped)?;
-        let mut after = o.clone();
-        sent.iter().for_each(|d| after.put(d.clone(), 0, None));
-        for d in sent {
-            // Only what its author adds or changes: of a type, the fields,
-            // the relations and the view that do not stand as they are.
-            let key = lakelands_core::engines::declaration_key;
-            let mut was = declared.iter().map(|b| &b.declaration);
-            let (was, mut new) = (was.find(|b| key(b) == key(d)), d.clone());
-            match (&mut new, was) {
-                (Declaration::Type(t), Some(Declaration::Type(w))) => {
-                    *t = after.ty(&t.name)?.clone();
-                    t.fields.retain(|f| !w.fields.contains(f));
-                    t.relations.retain(|r| !w.relations.contains(r));
-                    t.view = t.view.take().filter(|v| Some(v) != w.view.as_ref());
-                }
-                (_, Some(w)) if w == d => continue,
-                _ => {}
-            }
-            let named = describe::probed_types(&new);
-            for t in named.iter().filter_map(|n| o.ty(n).ok()) {
-                let sets = |n: &str| after.set(n).map(|s| s.filter.clone());
-                let mut names = describe::declaration_probes(&new, &t.name, &sets);
-                // A function's inputs and what an embedding is made from.
-                if let Declaration::Type(x) = &new
-                    && x.name == t.name
-                {
-                    let read = |f| crate::backed::computed_reads(&after, f);
-                    names.extend(x.fields.iter().filter_map(read).flatten());
-                }
-                let has = |n: &&FieldName| t.has_field(n);
-                sees.check_probe(t, names.iter().filter(has))?;
-            }
+        // What remains probed lies in the author's view, but may not be read
+        // there: a masked or write-only field is not granted either.
+        for (t, names) in probes {
+            sees.check_probe(t, names.iter())?;
         }
         Ok(())
     }
@@ -347,7 +393,7 @@ impl Call<'_> {
             let mut after = o.clone();
             after.put(Declaration::Type(m.to.clone()), 0, None);
             let mut views: Vec<_> = m.views.drain(..).map(Declaration::Type).collect();
-            let judged = (self.redeclared(&after, &mut views))
+            let judged = (self.redeclared(&after, &mut views, true))
                 .and_then(|()| self.check_bundle(&after, &views));
             let at = Place::AfterMigration {
                 name: m.to.name.clone(),
@@ -365,7 +411,12 @@ impl Call<'_> {
 
     /// Reads each type of `declarations` that is declared already as its
     /// author's view of it ([`as_author`]).
-    pub(super) fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
+    pub(super) fn redeclared(
+        &self,
+        o: &Ontology,
+        declarations: &mut [Declaration],
+        scope: bool,
+    ) -> Result<()> {
         let sees = Sight::held(self.who, o);
         for d in declarations.iter() {
             if let Declaration::Type(t) = d
@@ -374,14 +425,16 @@ impl Call<'_> {
                 reads_stand(&sees, &before.decl, t, None)?;
             }
         }
-        self.reads_as_author(o, declarations, false)?;
+        if scope {
+            self.reads_as_author(o, declarations, false)?;
+        }
         // An `initial` is read against the value types the set declares.
         let mut after = std::borrow::Cow::Borrowed(o);
         let types = declarations
             .iter()
             .filter(|d| matches!(d, Declaration::ValueType(_)));
         types.for_each(|d| after.to_mut().put(d.clone(), 0, None));
-        for d in declarations {
+        for d in declarations.iter_mut() {
             let Declaration::Type(t) = d else { continue };
             initials(&after, t);
             if let Some(before) = o.types.get(&t.name) {

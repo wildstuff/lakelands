@@ -82,6 +82,13 @@ are objects: `code`, the parameters by the names below, and `message`.
 A host renders a code it knows in its users' language, and one it does
 not know by its message. The rules a code keeps are in
 `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`.
+
+An authored write's idempotency key belongs to its writer: the id of
+such a write is derived from the writer's name and the key, so one key
+from one writer is one write, and a retry under a renamed writer is a
+second write. A host drains the retries it may still send under a
+writer's name before it renames the writer
+(`docs/decisions/118-a-rename-ends-an-idempotency-keys-reach.md`).
 """
 
 

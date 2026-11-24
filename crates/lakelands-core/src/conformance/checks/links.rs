@@ -1418,13 +1418,11 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
         cat.apply(&blind, beside).await,
         cat.declare(&blind, reads).await,
     );
-    let at_set = json!({"code": "unknown_field", "field": "since",
-        "at": [{"code": "object_set", "name": "since_known"}]});
     ensure!(
-        invalid_like(&alone, &at_set) && beside == alone,
-        "an author kept from `since` of `{lt}` is refused an object set that reads it as \
-         reading a field it does not know, at the set: alone, and word for word with the \
-         owner in the same set; it answered {alone:?} and {beside:?}"
+        matches!(refused_on(&alone), Some(("since", Refusal::NotGranted))) && beside == alone,
+        "an author kept from `since` of `{lt}` is refused an object set that reads it as not \
+         granted on it: alone, and word for word with the owner in the same set; it answered \
+         {alone:?} and {beside:?}"
     );
     let what = "a set that names a link type no relation carries, or one its author is not shown";
     head_unmoved(store.as_ref(), before, what).await

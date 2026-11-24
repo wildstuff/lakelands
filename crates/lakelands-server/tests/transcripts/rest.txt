@@ -279,6 +279,16 @@
 < lakelands-position: 14
 < {"data":[{"id":"d8e3b34ea3114d4717a34d8043fa6334","position":14,"proposed_at":"{proposed_at}","proposer":"agent:clerk","state":"pending","why":"`pay` is declared high risk; it runs when accepted","write":{"key":"INV-2","opts":{},"payload":{"reference":"TX-7"},"verb":"pay","write":"call"}}],"position":14}
 
+# A list holding one proposal twice: refused as repeated at the place it
+# repeats, and nothing of the list is accepted.
+> POST /lakes/finance/proposals/accept_many
+> authorization: Bearer k-owner
+> {"proposals":["{proposal}","{proposal}"]}
+< 409
+< content-type: application/json
+< lakelands-position: 14
+< {"error":"refused","index":1,"message":"refused: the proposal is listed twice, repeating the one at place 0","proposal":"d8e3b34ea3114d4717a34d8043fa6334","reason":{"index":0,"refusal":"repeated"},"todo":"drop the repeated proposal from the list and ask again; then send the list again, or the list without proposal 1","what":"proposal 1 of the list (d8e3b34ea3114d4717a34d8043fa6334): refused: the proposal is listed twice, repeating the one at place 0; none was accepted"}
+
 > POST /lakes/finance/proposals/{proposal}/accept
 > authorization: Bearer k-owner
 < 200

@@ -17,7 +17,8 @@ type Viewed<'a> = (&'a dyn ProjectionView, &'a Pending);
 #[derive(Default)]
 struct Batch {
     pending: Pending,
-    done: BTreeSet<ProposalId>,
+    /// Each proposal the list so far decided, at the place it first held.
+    done: BTreeMap<ProposalId, u64>,
     lease: Option<Lease>,
     events: Vec<Event>,
     stored: Vec<CanonicalEvent>,
@@ -226,7 +227,7 @@ impl Call<'_> {
             // check it, and nothing changes until it is accepted; the
             // proposer needs no `schema` grant (013, extended).
             ProposedWrite::Declare { declarations, plan } => {
-                self.redeclared(&w.ontology, declarations)?;
+                self.redeclared(&w.ontology, declarations, true)?;
                 self.check_bundle(&w.ontology, declarations)?;
                 // Its plan, telling only: what the walk finds is the accept's
                 // to refuse, as before (062).
@@ -591,7 +592,7 @@ impl Call<'_> {
         // so the one append folds the declarations once, in order (117).
         let began = w.ontology.clone();
         let decided = list.iter().enumerate().try_for_each(|(index, proposal)| {
-            let again = !b.done.insert(proposal.clone());
+            let first = b.done.insert(proposal.clone(), index as u64);
             let refused = |e| {
                 let (index, proposal, error) = (index as u64, proposal.clone(), Box::new(e));
                 Error::Accepting {
@@ -600,9 +601,9 @@ impl Call<'_> {
                     error,
                 }
             };
-            match again {
-                true => Err(Error::refused(None, Refusal::Decided)),
-                false => (self.accepting(w, (proposal, asked), None, Some(&mut b))).map(drop),
+            match first {
+                Some(first) => Err(Error::refused(None, Refusal::Repeated { index: first })),
+                None => (self.accepting(w, (proposal, asked), None, Some(&mut b))).map(drop),
             }
             .map_err(refused)
         });

@@ -27,21 +27,28 @@ reads (009), and `subscribe` and `unsubscribe`, which begin and end the
 session's notifications of the changes it may read
 (`docs/decisions/037-the-feed-over-a-network-door.md`).
 
-Nine doors of the `Catalog` have no tool of their own: `describe_type`
-is `describe` with a `type`, `migrate_apply` is `migrate` with the
-`report_id` of the preflight it applies, `migrate_value_type` and
-`migrate_value_type_apply` are `migrate` with a `value_type`, `apply`
-has no tool, and `ingest` is deliberately not a tool — a source feeds a
-lake through a stream, not through a model — and `judge` is no tool
-either: it answers a host's question, what a rule will say of records it
-holds or is about to send, and appends nothing
-(`docs/decisions/113-a-judge-answers-what-rules-say-of-records.md`),
-and nor are `vector_coverage` and `purge_preflight`, an operator's gauge
-and a source's take-back asked as a principal
+Nineteen doors of the `Catalog` have no tool of their own. Five are
+another door's tool with an argument: `describe_type` is `describe` with
+a `type`, `accept_planned` is `accept` with a `plan_id`, `migrate_apply`
+is `migrate` with the `report_id` of the preflight it applies, and
+`migrate_value_type` and `migrate_value_type_apply` are `migrate` with a
+`value_type`. Six answer a source's or a host's question, not a model's:
+`ingest` is deliberately not a tool — a source feeds a lake through a
+stream, not through a model — and neither is `ingest_with`, a host's
+write door beside it, nor `judge`, which answers what a rule will say of
+records it holds or is about to send and appends nothing
+(`docs/decisions/113-a-judge-answers-what-rules-say-of-records.md`), nor
+the quarantine doors `quarantined`, `dismiss_quarantined` and
+`quarantine`
+(`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+Eight are served over REST only: `declare` of any declaration but a type
+(a type's declaration is `declare_type`), `apply`, `apply_dry_run`,
+`accept_many`
+(`docs/decisions/117-several-proposals-are-accepted-as-one.md`), `plan`
+and `enact` (`docs/decisions/062-a-change-plans-before-it-acts.md`), and
+`vector_coverage` and `purge_preflight`, an operator's gauge and a
+source's take-back asked as a principal
 (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
-`declare_type` is `declare`
-of a type; `declare` of any other declaration has no tool, as `apply`
-has none.
 
 ### One generator names every tool
 
@@ -116,3 +123,11 @@ second rule to keep in step.
 - Amended at lakelands#1594 and lakelands#1595: `vector_coverage` and
   `purge_preflight` joined the generic doors, asked as a principal, and
   the doors of the `Catalog` without a tool are nine.
+- Amended at lakelands#1815: the doors without a tool were read again off
+  the `Catalog` and the `Door` enum, and the roster above corrected.
+  `accept_planned`, `accept_many`, `apply_dry_run`, `plan`, `enact`,
+  `ingest_with` and the quarantine doors `quarantined`,
+  `dismiss_quarantined` and `quarantine` had not been counted, and
+  `declare` of a declaration other than a type was named in the prose
+  but not in the number. The doors of the `Catalog` without a tool of
+  their own, nine since lakelands#1594 and lakelands#1595, are nineteen.

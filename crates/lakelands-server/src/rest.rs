@@ -101,7 +101,9 @@ fn status_of(e: &Error) -> StatusCode {
             | Refusal::VerbsOnly { .. }
             | Refusal::Reserved
             | Refusal::Declined(_) => StatusCode::FORBIDDEN,
-            Refusal::Decided | Refusal::Unanswered(_) => StatusCode::CONFLICT,
+            Refusal::Decided | Refusal::Repeated { .. } | Refusal::Unanswered(_) => {
+                StatusCode::CONFLICT
+            }
             Refusal::Invalid(_)
             | Refusal::Constraint(_)
             | Refusal::Precondition(_)
@@ -222,6 +224,7 @@ enum Kind {
 }
 
 const AT: [(&str, Kind); 2] = [("as_of", Kind::Int), ("valid_at", Kind::Text)];
+const PREFLIGHT: [(&str, Kind); 1] = [("type", Kind::Text)];
 const FIND: [(&str, Kind); 13] = [
     ("where", Kind::Text),
     ("order_by", Kind::Order),
@@ -512,6 +515,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Nothing,
             Writes::No,
         ),
+        (["types", ty, "coverage"], Method::GET) => r(
+            Door::VectorCoverage { ty: (*ty).into() },
+            "GET …/types/<type>/coverage",
+            none,
+            &[],
+            BodyAs::Nothing,
+            Writes::No,
+        ),
         (["types", ty, "records", key], Method::PUT) => r(
             Door::Upsert { ty: (*ty).into() },
             "PUT …/types/<type>/records/<key>",
@@ -607,6 +618,16 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             "GET …/describe/<type>",
             arg("type", ty),
             &AT,
+            BodyAs::Nothing,
+            Writes::No,
+        ),
+        (["purge", source], Method::GET) => r(
+            Door::PurgePreflight {
+                source: (*source).into(),
+            },
+            "GET …/purge/<source>",
+            none,
+            &PREFLIGHT,
             BodyAs::Nothing,
             Writes::No,
         ),

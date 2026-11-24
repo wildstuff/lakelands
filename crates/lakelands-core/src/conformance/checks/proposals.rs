@@ -38,7 +38,7 @@ check!(
 
 check!(
     ACCEPT_MANY = several_proposals_are_accepted_as_one_or_none,
-    "117 (lakelands#1802): `accept_many` accepts a list of proposals in one append, all or none: each is judged as the ones before it in the list left the lake, so a pinned upsert a sibling earlier in the list wrote over is refused as changed, naming its place in the list and its id; so is a decided proposal or one listed twice, one whose record the asker may write only in part, and a write that is not an upsert, a retirement, a call or a declaration bundle; a call handed to an executor and any other write — a migration of a type or of a value type included — is refused as the wrong door at its place, and a principal without the review grant is refused before any entry; a refusal appends nothing and leaves every proposal of the list pending; a list accepted answers an outcome for each, in order, their events contiguous after the head. A declaration bundle is judged at the head its predecessors left — a bundle redeclaring a type an earlier entry of the list declared differently is refused as invalid naming the type, and nothing of the first declaration is written, and a pinned write whose type an earlier entry redeclared is refused as changed at its place — and two declarations accepted together append each acceptance and its `declared`, in list order, leaving both types in force"
+    "117 (lakelands#1802): `accept_many` accepts a list of proposals in one append, all or none: each is judged as the ones before it in the list left the lake, so a pinned upsert a sibling earlier in the list wrote over is refused as changed, naming its place in the list and its id; so is a decided proposal, one whose record the asker may write only in part, and a proposal whose id a later entry of the list repeats, which is refused as repeated naming the place of its first copy; and a write that is not an upsert, a retirement, a call or a declaration bundle; a call handed to an executor and any other write — a migration of a type or of a value type included — is refused as the wrong door at its place, and a principal without the review grant is refused before any entry; a refusal appends nothing and leaves every proposal of the list pending; a list accepted answers an outcome for each, in order, their events contiguous after the head. A declaration bundle is judged at the head its predecessors left — a bundle redeclaring a type an earlier entry of the list declared differently is refused as invalid naming the type, and nothing of the first declaration is written, and a pinned write whose type an earlier entry redeclared is refused as changed at its place — and two declarations accepted together append each acceptance and its `declared`, in list order, leaving both types in force"
 );
 
 check!(
@@ -631,39 +631,64 @@ async fn several_proposals_are_accepted_as_one_or_none(store: Store) -> Held {
     let (f, s, d, w) = (&first, &second, &decided, &whole);
     // Each is refused at 1 as a lone accept of it would be; `None` is the
     // conflict of a pinned version that is no longer the record's.
-    use Refusal::{Decided, NotGranted, WrongDoor};
+    use Refusal::{Decided, NotGranted, Repeated, WrongDoor};
     let declared_since = Some(Error::invalid(Case::DeclaredSinceProposed {
         what: Naming::Type,
         name: "memo".into(),
     }));
-    for (who, list, want, why) in [
-        (own, [f, s], None, "an upsert a sibling moved"),
-        (own, [f, d], no(Decided), "a decided proposal"),
-        (own, [f, f], no(Decided), "a proposal listed twice"),
-        (own, [&pin_a, &pin_b], changed.clone(), "a moved pin"),
-        (own, [f, &migration], no(WrongDoor), "a migration"),
+    // A copy repeated at 1 or further on names its second place as index and
+    // the place of its first copy as the reason's index.
+    let l2 = |a: [&ProposalId; 2]| -> Vec<ProposalId> { a.map(Clone::clone).into() };
+    let l3 = |a: [&ProposalId; 3]| -> Vec<ProposalId> { a.map(Clone::clone).into() };
+    for (who, list, at, want, why) in [
+        (own, l2([f, s]), 1, None, "an upsert a sibling moved"),
+        (own, l2([f, d]), 1, no(Decided), "a decided proposal"),
         (
             own,
-            [&redeclare, &pin_a],
+            l2([f, f]),
+            1,
+            no(Repeated { index: 0 }),
+            "a proposal listed twice",
+        ),
+        (
+            own,
+            l3([f, w, f]),
+            2,
+            no(Repeated { index: 0 }),
+            "a proposal listed again after an entry between",
+        ),
+        (own, l2([&pin_a, &pin_b]), 1, changed.clone(), "a moved pin"),
+        (own, l2([f, &migration]), 1, no(WrongDoor), "a migration"),
+        (
+            own,
+            l2([&redeclare, &pin_a]),
+            1,
             changed,
             "a pinned proposal on a type a sibling redeclared",
         ),
-        (&narrow, [w, &away], no(NotGranted), "one listed in part"),
+        (
+            &narrow,
+            l2([w, &away]),
+            1,
+            no(NotGranted),
+            "one listed in part",
+        ),
         (
             own,
-            [&declares, &declares_again],
+            l2([&declares, &declares_again]),
+            1,
             declared_since,
             "a redeclared type",
         ),
     ] {
-        let list = list.map(Clone::clone);
         let before = store.head().await.must("reading the head")?;
         let err = cat.accept_many(who, &list).await.must_fail(why)?;
         head_unmoved(store.as_ref(), before, why).await?;
         ensure!(
-            matches!(&err, Error::Accepting { index: 1, proposal, error } if *proposal == list[1]
+            matches!(&err, Error::Accepting { index, proposal, error } if *index as usize == at
+                && *proposal == list[at]
                 && want.as_ref().map_or(matches!(**error, Error::Conflict { .. }), |w| **error == *w)),
-            "accepting a list holding {why} at 1 must be refused naming that place, its id \
+            "accepting a list holding {why} at {at} must be refused naming that place, its id \
              and {want:?}; it failed with {err:?}"
         );
         let listed = cat.proposals(own, ProposalFilter::default());

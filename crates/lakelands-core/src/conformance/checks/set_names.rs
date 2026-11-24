@@ -26,7 +26,7 @@ check!(
 
 check!(
     RIGHTS = a_named_set_is_read_by_the_right_to_read_what_its_filter_reads,
-    "024, extended (lakelands#552): a reader kept from a field is answered, for in_set of a set whose filter reads it, directly or through the sets it names, as for a set that is not declared; describe lists it no such set; a write's answer names it no such set joined or left; an author kept from the field declares no set that names one, and with the `schema` grant is shown each set's definition and still refused the read of one (lakelands#798); a proposer without `schema` that proposes a set, or a trigger whose `when` names one, over a set it is not shown is refused as over a name no set bears, and to declare a set under that name, of any type, is not granted to it, where its author is told the set's type; a set of a type its reader is not shown is a set that is not declared, to a read and to a trigger's `when`, and to declare a set under its name, of any type, is not granted where a name no set bears is proposed, to a holder of `schema` too (lakelands#877)"
+    "024, extended (lakelands#552): a reader kept from a field is answered, for in_set of a set whose filter reads it, directly or through the sets it names, as for a set that is not declared; describe lists it no such set; a write's answer names it no such set joined or left; an author kept from the field declares no set that names one, and with the `schema` grant is shown each set's definition and still refused the read of one (lakelands#798); a proposer without `schema` that proposes a set, or a trigger whose `when` names one, over a set it is not shown is refused, as not granted on a field of its filter the proposer is kept from, naming it, where the set's type is shown it, and as on a name no set bears where its type is not; to declare a set under a taken name, of any type, is not granted it, where its author is told the set's type (lakelands#1835); a set of a type its reader is not shown is a set that is not declared, to a read and to a trigger's `when`, and to declare a set under its name, of any type, is not granted where a name no set bears is proposed, to a holder of `schema` too (lakelands#877)"
 );
 
 const TYPE: &str = "invoice";
@@ -317,7 +317,9 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     (author.grants.schema, author.grants.restricted) = (true, true);
     let before = s.head().await.must("the head")?;
     // One without `schema` proposes none either, nor a trigger whose `when`
-    // names one, and is told no more than a read tells it: the set is one
+    // names one. Where the set's type is shown it is refused as not granted
+    // on the field of its filter it is kept from, naming it (lakelands#1835);
+    // where the type is not, no more than a read tells it: the set is one
     // that is not declared (lakelands#798, lakelands#877). A set's `where`
     // and a trigger's `when` are the declarations that name a set; a verb's
     // `requires` and a view's `where` take none (`REFUSED`).
@@ -338,12 +340,19 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     for when in [false, true] {
         let (mine, none) = (naming("open", when).await, naming("ghost", when).await);
         let what = format!("`kept` proposing what names `open` (in a trigger's `when`: {when})");
+        let mine = mine.must_fail(&what)?;
         let none = none.must_fail("proposing what names `ghost`")?;
-        alike_renamed(&what, &mine.must_fail(&what)?, &none, ("ghost", "open"))?;
+        ensure!(
+            matches!(refused_on(&mine), Some(("status", Refusal::NotGranted)))
+                && matches!(invalid_case(&none), Some(Case::SetUndeclared { .. })),
+            "{what} is refused as not granted on `status`, the field `open` reads, while what \
+             names `ghost` is refused as on a name no set bears; they answered {mine:?} and \
+             {none:?}"
+        );
     }
     // An author is shown each set's definition, so its refusal names what
-    // `open` reads, as a field the type does not have; and it reads no set
-    // it may not read, answered as `kept` is.
+    // `open` reads, not granted on that field; and it reads no set it may
+    // not read, answered as `kept` is.
     let mine = l.cat.declare(&author, set("mine", "in_set('open')")).await;
     let described = l.cat.describe(&author, Default::default()).await;
     let shown = described.must("describing the lake to an author")?.data;
@@ -351,9 +360,9 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     let what = "an author kept from `status`, shown its definition, reading by `open`";
     alike_renamed(what, &read.must_fail(what)?, &ghost, ("ghost", "open"))?;
     ensure!(
-        matches!(invalid_case(&mine), Some(Case::UnknownField { field, .. }) if field.as_str() == "status"),
-        "an author kept from `status` declares no set naming `open`, refused as on a field \
-         `invoice` does not have; it answered {mine:?}"
+        matches!(refused_on(&mine), Some(("status", Refusal::NotGranted))),
+        "an author kept from `status` declares no set naming `open`, refused as not granted on \
+         `status`; it answered {mine:?}"
     );
     ensure!(
         shown.object_sets.len() == 3,
