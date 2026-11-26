@@ -685,8 +685,11 @@ pub fn preflight(
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
     let sees = who.map(|p| Sight::held(p, &w.ontology));
+    // The right comes before the rows: a type closed to `who` is refused
+    // though the purge would take nothing of it (116).
     if let (Some(s), Some(t)) = (&sees, ty) {
-        s.ty(t)?;
+        let decl = s.ty(t)?;
+        writes::retires(s, Door::Authored, &w.ontology, decl).map_err(|_| Error::not_granted())?;
     }
     let window = Window::Whole;
     let out = settled(lake, view.as_ref(), &w.ontology, (source, ty), &window)?;

@@ -9776,6 +9776,28 @@ pub async fn a_principal_asks_coverage_and_a_purge_preflight_through_the_door(
         }),
         "one who may not purge from the source may not ask its preflight"
     );
+    // The value form is asked beside it, on the same wire, and judged the
+    // same way.
+    let all = lakelands_api::write::Selection::WrittenBefore(
+        lakelands_api::Timestamp::from_date(9999, 1, 1).expect("a far date"),
+    );
+    let values = c
+        .remove_values_preflight(own, &"crm".into(), &all)
+        .await
+        .expect("the owner asks a take-back's preflight");
+    assert_eq!(values.selection, all, "{values:?}");
+    assert!(!values.report_id.is_empty(), "{values:?}");
+    let refused = c
+        .remove_values_preflight(stranger, &"crm".into(), &all)
+        .await;
+    assert_eq!(
+        refused.err(),
+        Some(Error::Refused {
+            field: None,
+            reason: Refusal::NotGranted
+        }),
+        "one who may not take the source's values back may not ask its preflight"
+    );
     assert_eq!(
         f.store.head().await.unwrap(),
         before,

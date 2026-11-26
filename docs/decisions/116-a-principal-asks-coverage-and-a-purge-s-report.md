@@ -77,6 +77,29 @@ a principal, and each appends nothing.**
   from records it is answered. Moved values are kept for the fields it
   reads. Unsearched types and quarantined rows are kept for the types it
   is shown.
+- The right comes before the rows. A type the purge reaches is judged
+  as the principal's retire of a record of it before any record is
+  counted, so a type it may not retire is refused though the purge
+  would take nothing of it. Otherwise an empty report would tell one
+  who may not touch the type the same as one who may, and whether a
+  report is refused would depend on what the source holds at the
+  moment, not on the principal's grant.
+
+### A value take-back's report is refused where the take-back would be
+
+- `remove_values_preflight` is asked by a principal on the `Catalog`
+  beside `purge_preflight`, on the same wire, and is judged the same
+  way. Every type the selection reaches is judged first, as above.
+  Every record the take-back would retire is judged as the principal's
+  retire of it. Every record it would keep but take values from is
+  judged as the principal's write of the record without those values:
+  the principal must be shown the type, told its settings, and able to
+  write the record both as it stands and as it would stand after.
+  Anything that fails refuses the whole report `not_granted`.
+- An answered report names only what the principal is shown, narrowed
+  as a purge's is. Its report id is the host's: the id names the act
+  and the selection, not who asked, so a principal's answer and the
+  host's for the same lake state cite the same report.
 
 ## Why
 
@@ -95,7 +118,8 @@ its effect.
 
 ## What it is not
 
-- It is not a principal's purge. `purge_source` stays the host's alone.
+- It is not a principal's purge or take-back. `purge_source` and
+  `remove_values` stay the host's alone.
   Who may take a source's records back is the host's decision.
 - It does not narrow `set_off`, `max_set_changes` or the count of
   quarantined rows a purge clears. Those come from the act's own
@@ -110,3 +134,6 @@ its effect.
 - Added at lakelands#1594 and lakelands#1595: the principal's
   `vector_coverage` and `purge_preflight` on the `Catalog`, and the
   narrowing and the refusal they apply.
+- Extended at lakelands#1844 and lakelands#1846: the principal's
+  `remove_values_preflight`, and the right judged before the rows in
+  both preflights.

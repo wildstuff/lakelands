@@ -175,6 +175,14 @@ crate::tagged_enum! {
             /// The source.
             source: SourceId,
         },
+        /// `remove_values_preflight`: what taking back a selection of one
+        /// source's values would take. Served over REST only, beside
+        /// `purge_preflight` and for its reason
+        /// (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
+        RemoveValuesPreflight {
+            /// The source.
+            source: SourceId,
+        },
     }
 }
 

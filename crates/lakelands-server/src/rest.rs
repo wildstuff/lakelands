@@ -631,6 +631,16 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Nothing,
             Writes::No,
         ),
+        (["purge", source, "values"], Method::POST) => r(
+            Door::RemoveValuesPreflight {
+                source: (*source).into(),
+            },
+            "POST …/purge/<source>/values",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["proposals"], Method::GET) => r(
             Door::Proposals,
             "GET …/proposals",

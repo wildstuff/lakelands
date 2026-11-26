@@ -685,6 +685,15 @@ pub(crate) async fn run(
             let p: P = args(label, &a)?;
             to_json(&c.purge_preflight(who, source, p.ty.as_ref()).await?)
         }
+        Door::RemoveValuesPreflight { source } => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct P {
+                selection: lakelands_api::write::Selection,
+            }
+            let p: P = args(label, &a)?;
+            to_json(&c.remove_values_preflight(who, source, &p.selection).await?)
+        }
         Door::Pin => {
             let tool = label.into();
             return Err(Fault::arguments(Case::NoSessionToPin { tool }));

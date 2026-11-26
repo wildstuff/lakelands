@@ -1291,6 +1291,11 @@ check!(
 );
 
 check!(
+    PREFLIGHT_RIGHT_FIRST = a_principals_preflight_answers_where_its_write_would_land,
+    "116, extended (lakelands#1844, lakelands#1846): a principal asks `remove_values_preflight` at the door as it asks `purge_preflight`, and both are judged as its write: answered where it may retire what the act would take, refused not granted otherwise; the right to the type is judged before the rows, so a selection that matches nothing is refused one that may not write the type, and answered one that may; the value form's report id is the host's"
+);
+
+check!(
     ONE_TYPE = a_purge_that_names_a_type_retires_what_the_source_brought_into_it_alone,
     "039, extended: a purge that names a type retires, in one append, the live records the source brought into that type, and leaves the source's records of its other types and other sources' records of that type; the report names the type, counts it alone and names no type unsearched"
 );
@@ -2155,4 +2160,94 @@ async fn a_principal_asks_a_purges_report_as_a_write_is_judged(store: Store) -> 
             .await,
     )?;
     head_unmoved(store.as_ref(), before, "a principal's preflight").await
+}
+
+async fn a_principals_preflight_answers_where_its_write_would_land(store: Store) -> Held {
+    use super::only::{holder, not_granted};
+    use lakelands_api::write::Selection;
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "memo",
+        vec![
+            sourced("owner", StorageKind::Text),
+            sourced("n", StorageKind::Number),
+        ],
+    ))
+    .await?;
+    // `live` brought `m1` and holds it; `gone` brought `m2`, which the
+    // host has since retired: its selection reaches `memo` and takes
+    // nothing of it.
+    let delivered = |source: &'static str, id: &'static str, key: &'static str| {
+        let opts = IngestOpts {
+            delivery: Some(DeliveryId::from(id)),
+            ..IngestOpts::default()
+        };
+        let row = source_record("memo", key, json!({"owner": "ada", "n": 1}));
+        let source = SourceId::from(source);
+        let (cat, own) = (l.cat.clone(), l.own.clone());
+        async move { ingest_all_with(cat.as_ref(), &own, &source, opts, vec![row]).await }
+    };
+    delivered("live", "live-1", "m1")
+        .await
+        .must("delivering `m1`")?;
+    delivered("gone", "gone-1", "m2")
+        .await
+        .must("delivering `m2`")?;
+    l.retire("memo", "m2").await?;
+    let before = store.head().await.must("reading the head")?;
+    let s = store.as_ref();
+    let memo = |grant: Value| json!({"default": "write", "types": {"memo": grant}});
+    // Each principal, and whether its write lands where the act takes a
+    // row and where it takes none. One not joined to the type's writers
+    // holds a `writes_only` that cannot be applied, and so may write no
+    // record of it; one scoped to another owner may write `memo`, but not
+    // `m1`, so it is refused only where `m1` is taken.
+    let table = [
+        ("writer", json!({"default": "write"}), [true, true]),
+        ("reader", json!({"default": "read"}), [false, false]),
+        (
+            "unjoined",
+            memo(json!({"writes_only": {"n": "1"}})),
+            [false, false],
+        ),
+        (
+            "another",
+            memo(json!({"writes_only": {"owner": "bob"}})),
+            [false, true],
+        ),
+    ];
+    let asks = [
+        ("live", "live-1", "a selection that takes `m1`"),
+        ("gone", "gone-1", "one that takes nothing"),
+    ];
+    for (id, grant, lands) in table {
+        let who = holder(s, id, grant);
+        for ((source, delivery, what), lands) in asks.into_iter().zip(lands) {
+            let source = SourceId::from(source);
+            let values = Selection::Delivery(DeliveryId::from(delivery));
+            let got = l.cat.remove_values_preflight(&who, &source, &values).await;
+            let purge = l
+                .cat
+                .purge_preflight(&who, &source, Some(&"memo".into()))
+                .await;
+            let asked = |form: &str| format!("`{id}` asking the {form} preflight of {what}");
+            if lands {
+                let got = got.must(&asked("value"))?;
+                purge.must(&asked("purge"))?;
+                let host = store.remove_values_preflight(&source, &values).await;
+                let host = host.must(&format!("the host asking the value preflight of {what}"))?;
+                ensure!(
+                    got.report_id == host.report_id,
+                    "`{id}`'s value preflight of {what} names the report the host's names: \
+                     `{}` was expected and it named `{}`",
+                    host.report_id,
+                    got.report_id
+                );
+            } else {
+                not_granted(&asked("value"), got)?;
+                not_granted(&asked("purge"), purge)?;
+            }
+        }
+    }
+    head_unmoved(store.as_ref(), before, "a principal's preflights").await
 }

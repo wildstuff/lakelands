@@ -464,6 +464,22 @@ pub trait Catalog: Send + Sync {
         let op = "purge_preflight".to_owned();
         Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
     }
+
+    /// [`LakeStore::remove_values_preflight`] asked by `who` through this
+    /// door's context, as a write is judged: answered where `who` may take
+    /// back every value the removal would take, naming only what it is
+    /// shown, and refused `not_granted` otherwise (116). It is no tool. A
+    /// handle that does not remove, this default, answers it unbound.
+    async fn remove_values_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        selection: &crate::write::Selection,
+    ) -> Result<crate::write::RemoveReport> {
+        let _ = (who, source, selection);
+        let op = "remove_values_preflight".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
 }
 
 /// `ingest` for records already in hand: the records as the source
@@ -792,7 +808,8 @@ pub trait LakeStore: Send + Sync {
 
     /// What [`Self::remove_values`] would do, appending nothing, with the
     /// time it is expected to hold the writer's lock, under an id the act
-    /// may repeat.
+    /// may repeat. The host's; a principal asks
+    /// [`Catalog::remove_values_preflight`].
     async fn remove_values_preflight(
         &self,
         source: &SourceId,
