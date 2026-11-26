@@ -1292,7 +1292,7 @@ check!(
 
 check!(
     PREFLIGHT_RIGHT_FIRST = a_principals_preflight_answers_where_its_write_would_land,
-    "116, extended (lakelands#1844, lakelands#1846): a principal asks `remove_values_preflight` at the door as it asks `purge_preflight`, and both are judged as its write: answered where it may retire what the act would retire and write what it would keep, refused not granted otherwise; the right to the type is judged before the rows, so a selection that matches nothing is refused one that may not write the type, and answered one that may; a value take-back that keeps a record of a type only verbs retire is answered a writer, and refused one that may not write the record as it stands; its report names no field the principal does not read; a purge naming no type is judged by its rows alone; the value form's report id is the host's"
+    "116, extended (lakelands#1844, lakelands#1846): a principal asks `remove_values_preflight` at the door as it asks `purge_preflight`, and both are judged as its write: answered where it may retire what the act would retire and write what it would keep, refused not granted otherwise; the right to the type is judged before the rows, so a selection that matches nothing is refused one that may not write the type, and answered one that may; a value take-back that keeps a record of a type only verbs retire is answered a writer, and refused one that may not write the record as it stands; its report names no field the principal does not read and no reference from a type it is not shown; a purge naming no type is judged by its rows alone; the value form's report id is the host's"
 );
 
 check!(
@@ -2175,6 +2175,11 @@ async fn a_principals_preflight_answers_where_its_write_would_land(store: Store)
         ],
     ))
     .await?;
+    // `note` names a `memo` by `on`: the host's `n1` still refers to `m1`.
+    let on = json!({"name": "on", "type": {"kind": "reference", "target": "memo"}});
+    let about = json!({"name": "about", "target": "memo", "via": "on"});
+    let note = json!({"declare": "type", "name": "note", "fields": [on], "relations": [about]});
+    l.declare_json(note).await?;
     // `badge` is retired only by its verbs, so a take-back that would
     // retire a record of it is refused everyone; one that keeps the
     // record asks only to write it.
@@ -2211,6 +2216,7 @@ async fn a_principals_preflight_answers_where_its_write_would_land(store: Store)
         .await
         .must("delivering `m2`")?;
     l.retire("memo", "m2").await?;
+    l.upsert("note", "n1", json!({"on": "m1"})).await?;
     // `other` brought `b1`, and `kin` wrote its `tag` after: `kin`'s
     // take-back keeps `b1`, which `other` still holds, and takes the tag.
     let badge_row = |tag| ("badge", "b1", json!({"owner": "ada", "tag": tag}));
@@ -2276,6 +2282,7 @@ async fn a_principals_preflight_answers_where_its_write_would_land(store: Store)
         }
     }
     untyped(&l, s).await?;
+    unseen_references(&l, s).await?;
     kept_and_narrowed(&l, s).await?;
     head_unmoved(store.as_ref(), before, "a principal's preflights").await
 }
@@ -2301,6 +2308,36 @@ async fn untyped(l: &Lake, s: &dyn LakeStore) -> Held {
         "`reader` asking the untyped purge preflight of one that takes `m1`",
         got,
     )
+}
+
+/// A take-back that retires `m1`: the host's report names `n1`'s reference
+/// into it; one not shown `note` is answered a report that names none (116).
+async fn unseen_references(l: &Lake, s: &dyn LakeStore) -> Held {
+    use super::only::holder;
+    use lakelands_api::write::Selection;
+    let live = SourceId::from("live");
+    let values = Selection::Delivery(DeliveryId::from("live-1"));
+    let refs = |r: &lakelands_api::write::RemoveReport| {
+        (r.references.iter())
+            .map(|f| format!("{} {}", f.ty, f.relation))
+            .collect::<Vec<_>>()
+    };
+    let host = s.remove_values_preflight(&live, &values).await;
+    let host = refs(&host.must("the host asking the value preflight of `live-1`")?);
+    ensure!(
+        host == ["note about"],
+        "the host's value preflight of `live-1` names `n1`'s reference into `m1`: it named {host:?}"
+    );
+    let grant = json!({"default": "write", "types": {"note": {"default": "none"}}});
+    let unseen = holder(s, "unseen", grant);
+    let got = l.cat.remove_values_preflight(&unseen, &live, &values).await;
+    let got = refs(&got.must("`unseen` asking the value preflight of `live-1`")?);
+    ensure!(
+        got.is_empty(),
+        "`unseen`'s value preflight of `live-1` names no reference from a type it is not shown: \
+         it named {got:?}"
+    );
+    Ok(())
 }
 
 /// A take-back that keeps `b1` and takes its `tag`: a writer is answered
