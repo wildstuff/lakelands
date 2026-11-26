@@ -163,26 +163,22 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.28.0`.** Lakelands `0.28.0` is the `lakelands` CLI, its
+> **Status: `0.29.0`.** Lakelands `0.29.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (1153 checks through the doors and 108 through the
+> conformance suite (1154 checks through the doors and 108 through the
 > engine seam), with 117 decision records and the event log at format
 > version 24, installable from the release. Its budgets: see
 > `docs/budgets.md` for the ceilings and the ratchet bases.
-> Beside what `0.27.0` held (the numbers are issues), a caller bound to a
-> principal asks a type's vector coverage and a purge preflight through
-> the server's REST door at `GET …/types/<type>/coverage` and
-> `GET …/purge/<source>`, and the client's `RemoteCatalog` and
-> `ForwardingCatalog` ask them over it (lakelands#1811, an API and WIT
-> change a host makes); `Catalog::accept_many` refuses a proposal
-> repeated within one list as `Refusal::Repeated`, naming the index the
-> first copy held and appending nothing (lakelands#1814); the grid's
-> declaring doors refuse a declaration that reads a field its author may
-> not read, at `masked`, `none` or `write_only` (lakelands#1835); and
-> decision 118 says a rename of a writer ends the reach of an idempotency
-> key, so a host drains the retries before it renames one (lakelands#1832).
-> The log format is 24: a lake of `0.24.0` through `0.27.0` is read as it
+> Beside what `0.28.0` held (the numbers are issues), a caller bound to a
+> principal asks what taking a selection of a source's values back would
+> take through the server's REST door at `POST …/purge/<source>/values`,
+> and the client's `RemoteCatalog` and `ForwardingCatalog` ask it over
+> it (lakelands#1848, an API and WIT change a host makes); the right is
+> judged before a row is counted, so an empty selection on a type closed
+> to the caller is refused, not answered, and the purge preflight does
+> the same (lakelands#1846).
+> The log format is 24: a lake of `0.24.0` through `0.28.0` is read as it
 > was, and a lake of `0.23.0` is carried up as above; nothing is ingested
 > again. The lakes `0.23.0` and `0.24.0` made through their doors stay
 > kept, never edited, under `docs/log-format/lakes/`.
@@ -309,7 +305,12 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones. `0.28.0` built what the status block above lists. `0.27.0`
+milestones. `0.29.0` built what the status block above lists. `0.28.0`
+built a caller's vector coverage and purge preflight doors and the client
+methods that ask them, a repeated proposal's refusal, a scope rule at the
+declaring doors, and a rename ending an idempotency key's reach
+(lakelands#1811, lakelands#1814, lakelands#1835, lakelands#1832).
+`0.27.0`
 built a writer's open of a lake `0.23.0` wrote carrying it up from format
 23 to 24 in place, reported at `LakeStore::upgraded_at_open`
 (lakelands#1824). `0.26.0` built judging a set of declarations without
