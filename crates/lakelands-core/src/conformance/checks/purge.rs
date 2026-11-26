@@ -1292,7 +1292,7 @@ check!(
 
 check!(
     PREFLIGHT_RIGHT_FIRST = a_principals_preflight_answers_where_its_write_would_land,
-    "116, extended (lakelands#1844, lakelands#1846): a principal asks `remove_values_preflight` at the door as it asks `purge_preflight`, and both are judged as its write: answered where it may retire what the act would take, refused not granted otherwise; the right to the type is judged before the rows, so a selection that matches nothing is refused one that may not write the type, and answered one that may; the value form's report id is the host's"
+    "116, extended (lakelands#1844, lakelands#1846): a principal asks `remove_values_preflight` at the door as it asks `purge_preflight`, and both are judged as its write: answered where it may retire what the act would retire and write what it would keep, refused not granted otherwise; the right to the type is judged before the rows, so a selection that matches nothing is refused one that may not write the type, and answered one that may; a value take-back that keeps a record of a type only verbs retire is answered a writer, and refused one that may not write the record as it stands; its report names no field the principal does not read; a purge naming no type is judged by its rows alone; the value form's report id is the host's"
 );
 
 check!(
@@ -2164,6 +2164,7 @@ async fn a_principal_asks_a_purges_report_as_a_write_is_judged(store: Store) -> 
 
 async fn a_principals_preflight_answers_where_its_write_would_land(store: Store) -> Held {
     use super::only::{holder, not_granted};
+    use lakelands_api::ontology::RetiredBy;
     use lakelands_api::write::Selection;
     let l = Lake::of(store.as_ref());
     l.declare(type_decl(
@@ -2174,26 +2175,51 @@ async fn a_principals_preflight_answers_where_its_write_would_land(store: Store)
         ],
     ))
     .await?;
+    // `badge` is retired only by its verbs, so a take-back that would
+    // retire a record of it is refused everyone; one that keeps the
+    // record asks only to write it.
+    l.declare(TypeDecl {
+        retired_by: RetiredBy::Verbs,
+        ..type_decl(
+            "badge",
+            vec![
+                sourced("owner", StorageKind::Text),
+                sourced("tag", StorageKind::Text),
+            ],
+        )
+    })
+    .await?;
     // `live` brought `m1` and holds it; `gone` brought `m2`, which the
     // host has since retired: its selection reaches `memo` and takes
     // nothing of it.
-    let delivered = |source: &'static str, id: &'static str, key: &'static str| {
+    let delivered = |source: &'static str, id: &'static str, (ty, key, fields): Row| {
         let opts = IngestOpts {
             delivery: Some(DeliveryId::from(id)),
             ..IngestOpts::default()
         };
-        let row = source_record("memo", key, json!({"owner": "ada", "n": 1}));
+        let row = source_record(ty, key, fields);
         let source = SourceId::from(source);
         let (cat, own) = (l.cat.clone(), l.own.clone());
         async move { ingest_all_with(cat.as_ref(), &own, &source, opts, vec![row]).await }
     };
-    delivered("live", "live-1", "m1")
+    type Row = (&'static str, &'static str, Value);
+    let memo_row = |key| ("memo", key, json!({"owner": "ada", "n": 1}));
+    delivered("live", "live-1", memo_row("m1"))
         .await
         .must("delivering `m1`")?;
-    delivered("gone", "gone-1", "m2")
+    delivered("gone", "gone-1", memo_row("m2"))
         .await
         .must("delivering `m2`")?;
     l.retire("memo", "m2").await?;
+    // `other` brought `b1`, and `kin` wrote its `tag` after: `kin`'s
+    // take-back keeps `b1`, which `other` still holds, and takes the tag.
+    let badge_row = |tag| ("badge", "b1", json!({"owner": "ada", "tag": tag}));
+    delivered("other", "other-1", badge_row("red"))
+        .await
+        .must("delivering `b1`")?;
+    delivered("kin", "kin-1", badge_row("blue"))
+        .await
+        .must("writing `b1`'s tag")?;
     let before = store.head().await.must("reading the head")?;
     let s = store.as_ref();
     let memo = |grant: Value| json!({"default": "write", "types": {"memo": grant}});
@@ -2249,5 +2275,78 @@ async fn a_principals_preflight_answers_where_its_write_would_land(store: Store)
             }
         }
     }
+    untyped(&l, s).await?;
+    kept_and_narrowed(&l, s).await?;
     head_unmoved(store.as_ref(), before, "a principal's preflights").await
+}
+
+/// A purge that names no type names none before its rows: one that takes
+/// nothing is answered a reader an empty report, one that takes a record
+/// it may not retire is refused (116).
+async fn untyped(l: &Lake, s: &dyn LakeStore) -> Held {
+    use super::only::{holder, not_granted};
+    let reader = holder(s, "reader", json!({"default": "read"}));
+    let gone = SourceId::from("gone");
+    let got = l.cat.purge_preflight(&reader, &gone, None).await;
+    let got = got.must("`reader` asking the untyped purge preflight of one that takes nothing")?;
+    ensure!(
+        got.retired == 0,
+        "`reader`'s untyped purge preflight of one that takes nothing retires nothing: \
+         it retired {}",
+        got.retired
+    );
+    let live = SourceId::from("live");
+    let got = l.cat.purge_preflight(&reader, &live, None).await;
+    not_granted(
+        "`reader` asking the untyped purge preflight of one that takes `m1`",
+        got,
+    )
+}
+
+/// A take-back that keeps `b1` and takes its `tag`: a writer is answered
+/// though only verbs retire `badge`; one that may not write `b1` as it
+/// stands is refused; one that writes `tag` but may not read it is answered
+/// a report that does not name it (116).
+async fn kept_and_narrowed(l: &Lake, s: &dyn LakeStore) -> Held {
+    use super::only::{holder, not_granted};
+    use lakelands_api::write::Selection;
+    let kin = SourceId::from("kin");
+    let values = Selection::Delivery(DeliveryId::from("kin-1"));
+    let named = |r: &lakelands_api::write::RemoveReport| {
+        r.fields
+            .iter()
+            .any(|f| f.ty.as_str() == "badge" && f.field.as_str() == "tag")
+    };
+    let host = s.remove_values_preflight(&kin, &values).await;
+    let host = host.must("the host asking the value preflight of `kin-1`")?;
+    ensure!(
+        named(&host),
+        "the host's value preflight of `kin-1` keeps `b1` and takes `badge.tag`: it answered {host:?}"
+    );
+    let badge = |grant: Value| json!({"default": "write", "types": {"badge": grant}});
+    let writer = holder(s, "writer", json!({"default": "write"}));
+    let got = l.cat.remove_values_preflight(&writer, &kin, &values).await;
+    let got = got.must("`writer` asking the value preflight of one that keeps `b1`")?;
+    ensure!(
+        named(&got) && got.report_id == host.report_id,
+        "`writer`'s value preflight of `kin-1` is the host's: it answered {got:?}"
+    );
+    let another = holder(
+        s,
+        "another",
+        badge(json!({"writes_only": {"owner": "bob"}})),
+    );
+    let got = l.cat.remove_values_preflight(&another, &kin, &values).await;
+    not_granted(
+        "`another` asking the value preflight of one that keeps `b1`",
+        got,
+    )?;
+    let blind = holder(s, "blind", badge(json!({"fields": {"tag": "write_only"}})));
+    let got = l.cat.remove_values_preflight(&blind, &kin, &values).await;
+    let got = got.must("`blind` asking the value preflight of one that keeps `b1`")?;
+    ensure!(
+        !named(&got) && got.report_id == host.report_id,
+        "`blind`'s value preflight of `kin-1` names no field it does not read: it answered {got:?}"
+    );
+    Ok(())
 }

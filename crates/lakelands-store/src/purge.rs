@@ -685,8 +685,10 @@ pub fn preflight(
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
     let sees = who.map(|p| Sight::held(p, &w.ontology));
-    // The right comes before the rows: a type closed to `who` is refused
-    // though the purge would take nothing of it (116).
+    // The right comes before the rows: a type named and closed to `who` is
+    // refused though the purge would take nothing of it. A purge naming no
+    // type names none before its rows, so only the records it takes are
+    // judged (116).
     if let (Some(s), Some(t)) = (&sees, ty) {
         let decl = s.ty(t)?;
         writes::retires(s, Door::Authored, &w.ontology, decl).map_err(|_| Error::not_granted())?;

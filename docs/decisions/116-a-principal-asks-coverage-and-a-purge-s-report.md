@@ -77,21 +77,30 @@ a principal, and each appends nothing.**
   from records it is answered. Moved values are kept for the fields it
   reads. Unsearched types and quarantined rows are kept for the types it
   is shown.
-- The right comes before the rows. A type the purge reaches is judged
+- The right comes before the rows. A type the purge names is judged
   as the principal's retire of a record of it before any record is
   counted, so a type it may not retire is refused though the purge
   would take nothing of it. Otherwise an empty report would tell one
   who may not touch the type the same as one who may, and whether a
   report is refused would depend on what the source holds at the
-  moment, not on the principal's grant.
+  moment, not on the principal's grant. A purge that names no type
+  names none before its rows: it is judged by the records it would
+  take, and one that would take none is answered with an empty
+  report. Which types a source once brought in is not kept apart from
+  its rows, and counting them would be the row read this rule is
+  meant to come before.
 
 ### A value take-back's report is refused where the take-back would be
 
 - `remove_values_preflight` is asked by a principal on the `Catalog`
   beside `purge_preflight`, on the same wire, and is judged the same
-  way. Every type the selection reaches is judged first, as above.
-  Every record the take-back would retire is judged as the principal's
-  retire of it. Every record it would keep but take values from is
+  way. Every type the selection reaches is judged first as the
+  principal's write of it: it must be shown the type, the type must
+  not be a view, its `writes_only` must apply, and it must be able to
+  write every field the take-back would take. A take-back that keeps a
+  record and only takes values from it asks no right to retire, so
+  the type is not judged as a retire. Every record the take-back
+  would retire is judged as the principal's retire of it. Every record it would keep but take values from is
   judged as the principal's write of the record without those values:
   the principal must be shown the type, told its settings, and able to
   write the record both as it stands and as it would stand after.

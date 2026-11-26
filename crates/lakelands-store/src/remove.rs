@@ -1045,11 +1045,11 @@ pub fn preflight(
 }
 
 /// Refuse, before a row is counted, a removal asked by the principal of
-/// `s` that reaches a type it may not take values from: one it is not
-/// shown, a view, one whose `writes_only` cannot be applied, or one with a
-/// field it may not write, as its retire of a record there is refused
-/// (116). A selection names no type, so one it is not shown is not granted,
-/// never missing.
+/// `s` that reaches a type it may not write: one it is not shown, a view,
+/// one whose `writes_only` cannot be applied, or one with a field taken it
+/// may not write (116). Its right to retire is judged only of a record the
+/// removal retires, in [`takes_from`]. A selection names no type, so one it
+/// is not shown is not granted, never missing.
 fn reachable(s: &Sight<'_>, ontology: &Ontology, g: &Gathered) -> Result<()> {
     let reached = (g.reached.iter().map(|(ty, _)| ty)).chain(g.fields.keys().map(|(ty, _)| ty));
     for ty in reached.collect::<BTreeSet<_>>() {
@@ -1057,7 +1057,14 @@ fn reachable(s: &Sight<'_>, ontology: &Ontology, g: &Gathered) -> Result<()> {
             continue;
         }
         let decl = s.ty(ty).map_err(|_| Error::not_granted())?;
-        writes::retires(s, Door::Authored, ontology, decl).map_err(|_| Error::not_granted())?;
+        let open = lakelands_core::not_a_view(decl).and_then(|()| s.check_writes_only(decl));
+        open.map_err(|_| Error::not_granted())?;
+        let mut taken = g
+            .fields
+            .keys()
+            .filter(|(t, _)| t == ty)
+            .filter_map(|(_, f)| decl.field(f));
+        writes::granted(taken.all(|f| s.field_access(decl, f).writes()))?;
     }
     Ok(())
 }
