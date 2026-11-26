@@ -25,8 +25,9 @@
 //!   whatever they would have done: they are run where the writer is.
 //!   The others, the host preflights among them, and the feed are the
 //!   local handle's, once it has folded the handle's own writes. The
-//!   catalog's principal-asked `purge_preflight` is a write's question, so
-//!   it goes to the writer as a write does
+//!   catalog's principal-asked `purge_preflight` and
+//!   `remove_values_preflight` are a write's questions, so they go to the
+//!   writer as a write does
 //!   (`docs/decisions/116-a-principal-asks-coverage-and-a-purge-s-report.md`).
 
 use std::cell::Cell;
@@ -334,6 +335,15 @@ impl Catalog for ForwardingCatalog {
         ty: Option<&TypeName>,
     ) -> Result<PurgeReport> {
         forward!(self, c => c.purge_preflight(who, source, ty);)
+    }
+
+    async fn remove_values_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        selection: &lakelands_api::write::Selection,
+    ) -> Result<lakelands_api::write::RemoveReport> {
+        forward!(self, c => c.remove_values_preflight(who, source, selection);)
     }
 
     async fn upsert(

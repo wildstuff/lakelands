@@ -39,14 +39,14 @@ use lakelands_api::error::Case;
 use lakelands_api::event::{Digest, Event, EventBody};
 use lakelands_api::id::KeyId;
 use lakelands_api::ontology::TypeDecl;
-use lakelands_api::principal::Renamed;
+use lakelands_api::principal::{Principal, Renamed};
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{
     Breach, RecordField, RemoveReport, RemovedField, Selection, TypeRetired,
 };
 use lakelands_api::{Error, FieldName, Position, RecordKey, Result, SourceId, Timestamp, TypeName};
 use lakelands_core::links;
-use lakelands_core::sight::Sight;
+use lakelands_core::sight::{Door, Sight};
 
 use crate::exec::Turn;
 use crate::forget::{History, count, counted, each_of, named_now};
@@ -982,8 +982,18 @@ pub(crate) fn whole_from(
 }
 
 /// What [`preflight`] would do, appending nothing, under the id the act
-/// may repeat.
-pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Result<RemoveReport> {
+/// may repeat. Asked by `who`, it is refused `not_granted` where a write of
+/// `who` taking the same values would be: first by the types the selection
+/// reaches, before a row is counted, so a type closed to `who` is refused
+/// though the selection holds nothing live of it; then by every record it
+/// takes from. It names only what `who` is shown, and its id is the host's
+/// (116).
+pub fn preflight(
+    lake: &Lake,
+    source: &SourceId,
+    selection: &Selection,
+    who: Option<&Principal>,
+) -> Result<RemoveReport> {
     let selection = &checked(selection)?;
     let began = std::time::Instant::now();
     let view = lake.engine.view(None)?;
@@ -998,7 +1008,14 @@ pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Resul
         (source, selection),
         (at, &all),
     )?;
+    let sees = who.map(|p| Sight::held(p, &ontology));
+    if let Some(s) = &sees {
+        reachable(s, &ontology, &g)?;
+    }
     let judged = Judged::of(lake, view.as_ref(), &ontology, &g)?;
+    if let Some(s) = &sees {
+        takes_from(view.as_ref(), s, &ontology, &judged)?;
+    }
     let (keys, apart) = g.keys(lake)?;
     let forgot =
         crate::lake::forgotten_list(view.as_ref(), &Staged::default())?.contains_key(source);
@@ -1014,10 +1031,91 @@ pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Resul
         quarantined,
         view.position(),
     )?;
+    if let Some(s) = &sees {
+        let retire: Vec<StoredRecord> = judged.retirable().map(|h| h.r.clone()).collect();
+        let at = (source, None, Some(s));
+        let refs = crate::purge::report(view.as_ref(), &ontology, at, &retire, Vec::new())?;
+        report.references = refs.references;
+        narrowed(&mut report, s);
+    }
     let through = view.position().unwrap_or(Position::GENESIS);
     report.report_id = token(source, selection, through, &judged.made);
     report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     Ok(report)
+}
+
+/// Refuse, before a row is counted, a removal asked by the principal of
+/// `s` that reaches a type it may not write: one it is not shown, a view,
+/// one whose `writes_only` cannot be applied, or one with a field taken it
+/// may not write (116). Its right to retire is judged only of a record the
+/// removal retires, in [`takes_from`]. A selection names no type, so one it
+/// is not shown is not granted, never missing.
+fn reachable(s: &Sight<'_>, ontology: &Ontology, g: &Gathered) -> Result<()> {
+    let reached = (g.reached.iter().map(|(ty, _)| ty)).chain(g.fields.keys().map(|(ty, _)| ty));
+    for ty in reached.collect::<BTreeSet<_>>() {
+        if ontology.ty(ty).is_err() {
+            continue;
+        }
+        let decl = s.ty(ty).map_err(|_| Error::not_granted())?;
+        let open = lakelands_core::not_a_view(decl).and_then(|()| s.check_writes_only(decl));
+        open.map_err(|_| Error::not_granted())?;
+        let mut taken = g
+            .fields
+            .keys()
+            .filter(|(t, _)| t == ty)
+            .filter_map(|(_, f)| decl.field(f));
+        writes::granted(taken.all(|f| s.field_access(decl, f).writes()))?;
+    }
+    Ok(())
+}
+
+/// Refuse a removal asked by the principal of `s` where a record it takes
+/// from is not that principal's to write: one it retires is judged as its
+/// retire would be, and one it takes values from as a write leaving the
+/// record without them (116).
+fn takes_from(
+    view: &dyn ProjectionView,
+    s: &Sight<'_>,
+    ontology: &Ontology,
+    judged: &Judged,
+) -> Result<()> {
+    for (ty, holders) in &judged.holders {
+        let decl = s.ty(ty).map_err(|_| Error::not_granted())?;
+        let rows: Vec<&StoredRecord> = holders.values().map(|h| &h.r).collect();
+        let shown = crate::reads::answered_rows(view, s, decl, &rows)?;
+        for (h, shown) in holders.values().zip(shown) {
+            if !h.holds && judged.made.contains(&h.r.made) {
+                let reach = || shown.then(|| h.r.clone()).ok_or_else(Error::not_granted);
+                let at = (s, Door::Authored, ontology);
+                writes::judge_retire(at, decl, &h.r.key, reach)
+                    .map_err(|_| Error::not_granted())?;
+            } else if !h.lost.is_empty() {
+                let mut after = h.r.fields.clone();
+                after.retain(|f, _| !h.lost.contains(f));
+                let told = writes::untold_setting(s, decl, &h.r.key).is_ok();
+                writes::granted(
+                    shown && told && s.writes_record(decl, Some(&h.r.fields), Some(&after)),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `report` as the principal of `s` is shown it: only the types it is
+/// shown and the fields it reads (116).
+fn narrowed(report: &mut RemoveReport, s: &Sight<'_>) {
+    let shown = |ty: &TypeName| s.ty(ty).is_ok();
+    let read = |ty: &TypeName, f: &FieldName| shown(ty) && s.reads(ty, f);
+    report.types.retain(|t| shown(&t.ty));
+    report.kept.retain(|t| shown(&t.ty));
+    report.retired.retain(|t| shown(&t.ty));
+    report.views.retain(|v| shown(v));
+    report.quarantined.retain(|q| shown(&q.ty));
+    report.fields.retain(|f| read(&f.ty, &f.field));
+    report.recomputed.retain(|f| read(&f.ty, &f.field));
+    let breach = |b: &Breach| shown(&b.ty) && b.field.as_ref().is_none_or(|f| s.reads(&b.ty, f));
+    report.breaches.retain(breach);
 }
 
 /// What a remove answers its caller: the report of the act, and the

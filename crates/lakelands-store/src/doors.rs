@@ -936,6 +936,24 @@ impl Catalog for Doors {
         .await
     }
 
+    async fn remove_values_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        selection: &Selection,
+    ) -> Result<RemoveReport> {
+        writes::check_source(source)?;
+        same_lake(&self.lake, who)?;
+        let (lake, who, source) = (self.lake.clone(), who.clone(), source.clone());
+        let (context, selection) = (self.context.clone(), selection.clone());
+        exec::run(move || {
+            let (who, ..) = seen(&lake, who)?;
+            writes::check_context(&lake, &context, &who)?;
+            crate::remove::preflight(&lake, &source, &selection, Some(&who))
+        })
+        .await
+    }
+
     async fn upsert(
         &self,
         who: &Principal,
@@ -1639,7 +1657,7 @@ impl LakeStore for Store {
     ) -> Result<RemoveReport> {
         writes::check_source(source)?;
         let (lake, source, selection) = (self.lake.clone(), source.clone(), selection.clone());
-        exec::run(move || crate::remove::preflight(&lake, &source, &selection)).await
+        exec::run(move || crate::remove::preflight(&lake, &source, &selection, None)).await
     }
 
     async fn erase_values(

@@ -1261,6 +1261,7 @@ pub const ALL: &[Check] = &[
     purge::REFERENCES_NAMED,
     purge::REPORT_HEAD,
     purge::PREFLIGHT_ASKED,
+    purge::PREFLIGHT_RIGHT_FIRST,
     purge::ONE_TYPE,
     purge::CO_OWNED_IN_TYPE,
     purge::OWN_REFERENCES,

@@ -342,6 +342,20 @@ impl Catalog for RemoteCatalog {
         self.go(who, call).await
     }
 
+    async fn remove_values_preflight(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        selection: &lakelands_api::write::Selection,
+    ) -> Result<lakelands_api::write::RemoveReport> {
+        let call = Call::new(
+            Method::POST,
+            format!("purge/{}/values", seg(source.as_str(), Segment::Source)?),
+        )
+        .json(&json!({ "selection": selection }));
+        self.go(who, call).await
+    }
+
     async fn upsert(
         &self,
         who: &Principal,

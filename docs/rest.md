@@ -141,6 +141,7 @@ key may hold any character.
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
 | `GET …/purge/<source>` | a purge's preflight, asked as a write is judged: what the purge would take and what it would strand, changing nothing | query: `type` (optional) |
+| `POST …/purge/<source>/values` | a value take-back's preflight, asked as a write is judged: what taking back a selection of the source's values would take, changing nothing | body: `selection` |
 | `GET …/quarantined` | quarantined records | query: `source`, `type`, `delivery`, `index`, `state` (`open` or `closed`), `limit`, `after` (an id, as JSON) |
 | `POST …/quarantined/dismiss` | dismiss a quarantined record | body: the id, `source`, `delivery`, `index` |
 | `POST …/quarantined` | quarantine a record the host refused | body: `source`, `opts` (as an ingest's: `delivery`, `sealed_apart`, `run`), `refused` (`record`, `cause`, `reason`) |
